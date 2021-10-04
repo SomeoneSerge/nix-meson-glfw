@@ -1,5 +1,6 @@
 with (import <nixpkgs> { });
 
 mkShell {
-  buildInputs = [ meson clang ninja ];
+  nativeBuildInputs = [ pkgconfig meson ];
+  buildInputs = [ clang ninja glfw3 ];
 }

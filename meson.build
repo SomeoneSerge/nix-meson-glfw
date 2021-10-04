@@ -3,5 +3,7 @@ project('nix-meson-glfw', 'cpp',
   default_options: ['cpp_std=c++17'])
 
 glfw3 = dependency('glfw3', version: '>=3.0.0')
+glew = dependency('glew', version: '>=2.2.0')
+
 executable('nix-meson-glfw', 'app.cpp',
-  dependencies: [ glfw3 ])
+  dependencies: [ glfw3, glew ])

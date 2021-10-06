@@ -2,9 +2,13 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 
 #include <cassert>
 #include <iostream>
+#include <string>
 
 const char *vtxSource = R"glsl(
     #version 150 core
@@ -28,9 +32,8 @@ const char *fragSource = R"glsl(
    }
 )glsl";
 
-int main() {
-  glfwInit();
-
+GLFWwindow *makeWindow(const std::string &title, const int width = 800,
+                       const int height = 600) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -38,13 +41,34 @@ int main() {
   glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
   GLFWwindow *window =
-      glfwCreateWindow(800, 600, "nix-meson-glfw", nullptr, nullptr);
+      glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
 
+  return window;
+}
+
+int main() {
+  if (!glfwInit()) {
+    std::cerr << "glfwInit() failed" << std::endl;
+    return 1;
+  }
+
+  GLFWwindow *window = makeWindow("nix-meson-glfw");
   glfwMakeContextCurrent(window);
 
   glewExperimental = GL_TRUE;
   glewInit();
-  assert(("GLEW initialization", glGenBuffers != nullptr));
+
+  if (glGenBuffers == nullptr) {
+    std::cerr << "glewInit() failed" << std::endl;
+    return 1;
+  }
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO &io = ImGui::GetIO();
+  ImGui_ImplGlfw_InitForOpenGL(window, true);
+  ImGui_ImplOpenGL3_Init("#version 150");
+  ImGui::StyleColorsDark();
 
   float vtxs[] = {0.0f, 0.5f, 0.5f, -0.5f, -0.5f, -0.5f};
 
@@ -63,11 +87,18 @@ int main() {
 
   GLint vtxCompileStatus;
   glGetShaderiv(vtxShader, GL_COMPILE_STATUS, &vtxCompileStatus);
-  assert(("Vertex shader compilation", vtxCompileStatus == GL_TRUE));
+
+  if (vtxCompileStatus != GL_TRUE) {
+    std::cerr << "Vertex shader compilation failed" << std::endl;
+    return 1;
+  }
 
   GLint fragCompileStatus;
   glGetShaderiv(fragShader, GL_COMPILE_STATUS, &fragCompileStatus);
-  assert(("Fragment shader compilation", fragCompileStatus == GL_TRUE));
+  if (fragCompileStatus != GL_TRUE) {
+    std::cerr << "Fragment shader compilation failed" << std::endl;
+    return 1;
+  }
 
   GLuint shaderProgram = glCreateProgram();
   glAttachShader(shaderProgram, vtxShader);
@@ -87,17 +118,40 @@ int main() {
   glEnableVertexAttribArray(posAttrib);
 
   while (!glfwWindowShouldClose(window)) {
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-
-    glfwSwapBuffers(window);
     glfwPollEvents();
+
+    glClearColor(.45f, .55f, .6f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glDrawArrays(GL_TRIANGLES, 0, 3);
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
       glfwSetWindowShouldClose(window, GL_TRUE);
     }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    ImGui::Begin("Demo window");
+    ImGui::Button("Demo button");
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    int dispWidth, dispHeight;
+    glfwGetFramebufferSize(window, &dispWidth, &dispHeight);
+    glViewport(0, 0, dispWidth, dispHeight);
+    glfwSwapBuffers(window);
   }
 
-  std::cout << "Hello, white triangle!" << std::endl;
+  /* why tf those aren't called upon something leaving the scope :facepalm: */
+  ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplGlfw_Shutdown();
+  ImGui::DestroyContext();
+
+  std::cout << "Hello, white triangle and imgui!" << std::endl;
 
   glDeleteProgram(shaderProgram);
   glDeleteShader(vtxShader);

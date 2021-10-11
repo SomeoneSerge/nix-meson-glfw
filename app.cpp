@@ -283,7 +283,7 @@ Uint8Image oiioLoadImage(const std::string &filename) {
 class SafeGlTexture : NoCopy {
 public:
   SafeGlTexture(const Uint8Image &image)
-      : _texture(0), xres(image.xres), yres(image.yres) {
+      : _texture(0), _xres(image.xres), _yres(image.yres) {
     glGenTextures(1, &_texture);
     glBindTexture(GL_TEXTURE_2D, _texture);
 
@@ -293,18 +293,21 @@ public:
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     const auto mode = image.channels == 3 ? GL_RGB : GL_RGBA;
-    glTexImage2D(GL_TEXTURE_2D, 0, mode, xres, yres, 0, mode, GL_UNSIGNED_BYTE,
-                 image.data.get());
+    glTexImage2D(GL_TEXTURE_2D, 0, mode, _xres, _yres, 0, mode,
+                 GL_UNSIGNED_BYTE, image.data.get());
   }
 
   ~SafeGlTexture() { glDeleteTextures(1, &_texture); }
 
   GLuint texture() const { return _texture; }
   void bind() { glBindTexture(GL_TEXTURE_2D, _texture); }
+  int xres() const { return _xres; }
+  int yres() const { return _yres; }
+  double aspect() const { return _yres * 1.0 / _xres; }
 
 private:
   GLuint _texture;
-  int xres, yres;
+  int _xres, _yres;
 };
 
 int main() {
@@ -334,7 +337,9 @@ int main() {
   glVertexAttribPointer(posAttrib, 2, GL_FLOAT, GL_FALSE, 0, 0);
   glEnableVertexAttribArray(posAttrib);
 
+  // FIXME:
   SafeGlTexture image0(oiioLoadImage("00001.png"));
+  SafeGlTexture image1(oiioLoadImage("00009.png"));
 
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);
@@ -344,6 +349,15 @@ int main() {
 
     ImGui::Begin("Demo window");
     ImGui::Button("Demo button");
+
+    {
+      /* no horizontal layout out of the box, what a shame */
+      const auto sz = ImGui::GetWindowSize();
+      ImGui::Image((void *)(intptr_t)image0.texture(),
+                   ImVec2(.5 * sz.x, .5 * sz.x * image0.aspect()));
+      ImGui::Image((void *)(intptr_t)image1.texture(),
+                   ImVec2(.5 * sz.x, .5 * sz.x * image1.aspect()));
+    }
     ImGui::End();
   }
 

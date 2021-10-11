@@ -3,30 +3,72 @@
         <link rel="stylesheet" type="text/css" href="asciinema-player.css" />
     </head>
     <body>
-        <p>
+        <section>
         <h3>2021-10-04</h3>
+        Bootstraping a Meson app (haven't used Meson before).
+        The toolchain (e.g. meson, ninja, clang, libraries) is provisioned via <a href="https://nixos.org">Nix</a>,
+        while <a href="https://direnv.net/">Direnv</a> provides integration with the shell.
+        The dev environment is ephemeral in the sense that no "global packages"
+        are installed: they are taken instead from /nix/store which is, in a
+        sense, an immutable data structure, and they are only visible within
+        the "Nix shell". With Direnv this means that meson and clang are
+        provisioned the moment you enter the project tree and cleared out the
+        moment you cd elsewhere. I'm not packaging the demo app as a Nix
+        package yet and I'm yet not pinning the versions of the dependencies
+        - I will do that later, by adding a flake.nix file specifying
+        a concrete <a href="https://github.com/NixOS/nixpkgs">nixpkgs</a> revision.
+        In the current setup "nixpkgs" is whatever version is pinned in my system.
+
+        I've never used OpenGL (and, thus, GLFW or GLEW), so I'm simply following examples from the <a href="https://open.gl">open.gl book</a>.
+
+        I'm also correcting my nvim config on the way.
+
         <asciinema-player speed="2" idle-time-limit="1" src="https://gist.githubusercontent.com/SomeoneSerge/bb521bb07023184eadf0e59e224abcbf/raw/viscor-2021-10-04.cast"></asciinema-player>
-        </p>
+        </section>
 
-        <p>
+        <section>
         <h3>2021-10-05</h3>
+        
+        Provisioning imgui via meson and glfw/glew via Nix.
+        Meson fetches a concrete revision of imgui and builds it as a static library that can be linked against your project.
+        Meson discovers GLFW and GLEW through <a href="https://www.bassi.io/articles/2018/03/15/pkg-config-and-paths/">pkg-config</a>:
+        Nix sets up the PKG_CONFIG_PATH variable when it detects that the packages comprising the shell (see buildInputs in shell.nix)
+        have .pc files, which is the case for GLFW and GLEW.
+        This means, in particular, that once we pin nixpkgs, the build is fully reproducible up to a bit.
+
         <asciinema-player speed="2" idle-time-limit="1" src="https://gist.githubusercontent.com/SomeoneSerge/bb521bb07023184eadf0e59e224abcbf/raw/nix-meson-glfw-2021-10-05.cast"></asciinema-player>
-        </p>
+        </section>
 
-        <p>
+        <section>
         <h3>2021-10-06</h3>
+
+        Finishing the GLFW+GLEW demo by following snippets from <a href="https://open.gl">open.gl book</a>
+
         <asciinema-player speed="2" idle-time-limit="1" src="https://gist.githubusercontent.com/SomeoneSerge/bb521bb07023184eadf0e59e224abcbf/raw/nix-meson-glfw-2021-10-06.cast"></asciinema-player>
-        </p>
+        </section>
 
-        <p>
+        <section>
         <h3>2021-10-10</h3>
-        <asciinema-player speed="3" idle-time-limit="1" src="https://gist.githubusercontent.com/SomeoneSerge/bb521bb07023184eadf0e59e224abcbf/raw/nix-meson-glfw-2021-10-10-raii.cast"></asciinema-player>
-        </p>
+        Basic RAII to manage opengl contexts, because otherwise it's too annoying
 
-        <p>
+        <asciinema-player speed="3" idle-time-limit="1" src="https://gist.githubusercontent.com/SomeoneSerge/bb521bb07023184eadf0e59e224abcbf/raw/nix-meson-glfw-2021-10-10-raii.cast"></asciinema-player>
+        </section>
+
+        <section>
         <h3>2021-10-11</h3>
+        Loading textures via OpenImageIO.
+        We provision OpenImageIO via Nix as well.
+        OpenImageIO, however, doesn't provide a "package-config file".
+        To bridge Nix and Meson we wrap OIIO in an ad hoc Nix derivation that
+        generates a openimageio2.pc file with the paths from the store. A
+        person trying to build the app without Nix would have to provision a
+        similar .pc file pointing to locations appropriate to their system.
+
+        We also run into some memory leaks which,
+        apparently, are caused by the nvidia driver and can't be dealt with...
+
         <asciinema-player speed="3" idle-time-limit="1" src="https://gist.githubusercontent.com/SomeoneSerge/bb521bb07023184eadf0e59e224abcbf/raw/nix-meson-glfw-2021-10-11.cast"></asciinema-player>
-        </p>
+        </section>
 
         <script src="asciinema-player.js"></script>
     </body>

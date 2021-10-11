@@ -8,12 +8,38 @@
 
 #include <cassert>
 #include <iostream>
+#include <memory>
 #include <string>
+
+#include <OpenImageIO/imageio.h>
+
+const char *vtxSource = R"glsl(
+    #version 150 core
+
+    in vec2 position;
+
+    void main()
+    {
+        gl_Position = vec4(position, 0.0, 1.0);
+    }
+)glsl";
+
+const char *fragSource = R"glsl(
+   #version 150 core
+   
+   out vec4 outColor;
+
+   void main()
+   {
+    outColor = vec4(1.0, 1.0, 1.0, 1.0);
+   }
+)glsl";
 
 class NoCopy {
 public:
   NoCopy() = default;
   virtual ~NoCopy() = default;
+  NoCopy(NoCopy &&) = delete; /* let's delete the moves for now as well */
   NoCopy(const NoCopy &) = delete;
   NoCopy operator=(const NoCopy &) = delete;
 };
@@ -44,8 +70,7 @@ public:
     _window = glfwCreateWindow(width, height, title, nullptr, nullptr);
   }
 
-  ~SafeGlfwWindow() { /* uh, apparently no need */
-  }
+  ~SafeGlfwWindow() { glfwDestroyWindow(_window); }
 
   GLFWwindow *window() const { return _window; }
   void makeContextCurrent() const { glfwMakeContextCurrent(_window); }
@@ -216,27 +241,71 @@ public:
   }
 };
 
-const char *vtxSource = R"glsl(
-    #version 150 core
+struct Uint8Image {
+  int xres;
+  int yres;
+  int channels;
+  std::unique_ptr<unsigned char[]> data;
 
-    in vec2 position;
+  Uint8Image(int xres, int yres, int channels,
+             std::unique_ptr<unsigned char[]> &&data)
+      : xres(xres), yres(yres), channels(channels), data(std::move(data)) {}
 
-    void main()
-    {
-        gl_Position = vec4(position, 0.0, 1.0);
-    }
-)glsl";
+  Uint8Image(Uint8Image &&other)
+      : xres(other.xres), yres(other.yres), data(std::move(other.data)) {}
+  Uint8Image(const Uint8Image &other) = delete;
+};
 
-const char *fragSource = R"glsl(
-   #version 150 core
-   
-   out vec4 outColor;
+Uint8Image oiioLoadImage(const std::string &filename) {
+  using namespace OIIO;
 
-   void main()
-   {
-    outColor = vec4(1.0, 1.0, 1.0, 1.0);
-   }
-)glsl";
+  auto in = ImageInput::open(filename);
+  if (!in)
+    throw std::runtime_error("Couldn't load the image");
+
+  const ImageSpec &spec = in->spec();
+  int xres = spec.width;
+  int yres = spec.height;
+  int channels = spec.nchannels;
+  std::unique_ptr<unsigned char[]> data =
+      std::make_unique<unsigned char[]>(xres * yres * channels);
+
+  if (!data)
+    throw std::runtime_error("Couldn't allocate memory for image data");
+
+  in->read_image(TypeDesc::UINT8, data.get());
+  in->close(); /* eh... why not raii, I now have to wrap it in try-catch and I
+                  don't want to */
+
+  return Uint8Image(xres, yres, channels, std::move(data));
+}
+
+class SafeGlTexture : NoCopy {
+public:
+  SafeGlTexture(const Uint8Image &image)
+      : _texture(0), xres(image.xres), yres(image.yres) {
+    glGenTextures(1, &_texture);
+    glBindTexture(GL_TEXTURE_2D, _texture);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    const auto mode = image.channels == 3 ? GL_RGB : GL_RGBA;
+    glTexImage2D(GL_TEXTURE_2D, 0, mode, xres, yres, 0, mode, GL_UNSIGNED_BYTE,
+                 image.data.get());
+  }
+
+  ~SafeGlTexture() { glDeleteTextures(1, &_texture); }
+
+  GLuint texture() const { return _texture; }
+  void bind() { glBindTexture(GL_TEXTURE_2D, _texture); }
+
+private:
+  GLuint _texture;
+  int xres, yres;
+};
 
 int main() {
   SafeGlfwCtx ctx;
@@ -264,6 +333,8 @@ int main() {
   GLint posAttrib = glGetAttribLocation(triangleProgram.program(), "position");
   glVertexAttribPointer(posAttrib, 2, GL_FLOAT, GL_FALSE, 0, 0);
   glEnableVertexAttribArray(posAttrib);
+
+  SafeGlTexture image0(oiioLoadImage("00001.png"));
 
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);

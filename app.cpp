@@ -13,6 +13,8 @@
 
 #include <OpenImageIO/imageio.h>
 
+#include <clipp.h>
+
 const char *vtxSource = R"glsl(
     #version 150 core
 
@@ -310,7 +312,29 @@ private:
   int _xres, _yres;
 };
 
-int main() {
+struct AppArgs {
+  std::string image0Path;
+  std::string image1Path;
+
+  static AppArgs parse(int argc, char *argv[]) {
+    using namespace clipp;
+
+    std::string image0Path, image1Path;
+    auto cli = (value("Path to image A", image0Path),
+                value("Path to image B", image1Path));
+
+    if (!clipp::parse(argc, argv, cli)) {
+      std::cerr << make_man_page(cli, argv[0]);
+      std::exit(1);
+    }
+    return AppArgs{image0Path, image1Path};
+  }
+};
+
+int main(int argc, char *argv[]) {
+
+  AppArgs args = AppArgs::parse(argc, argv);
+
   SafeGlfwCtx ctx;
   SafeGlfwWindow safeWindow;
   safeWindow.makeContextCurrent();
@@ -338,8 +362,8 @@ int main() {
   glEnableVertexAttribArray(posAttrib);
 
   // FIXME:
-  SafeGlTexture image0(oiioLoadImage("00001.png"));
-  SafeGlTexture image1(oiioLoadImage("00009.png"));
+  SafeGlTexture image0(oiioLoadImage(args.image0Path));
+  SafeGlTexture image1(oiioLoadImage(args.image1Path));
 
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);

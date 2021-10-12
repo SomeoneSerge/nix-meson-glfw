@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <implot.h>
 
 #include <cassert>
 #include <iostream>
@@ -14,6 +15,9 @@
 #include <OpenImageIO/imageio.h>
 
 #include <clipp.h>
+
+// FIXME:
+constexpr double WINDOW_MIN_WIDTH = 800;
 
 const char *vtxSource = R"glsl(
     #version 150 core
@@ -59,15 +63,15 @@ public:
 class SafeGlfwWindow : NoCopy {
 public:
   SafeGlfwWindow() {
-    const auto width = 800;
-    const auto height = 600;
+    const auto width = WINDOW_MIN_WIDTH;
+    const auto height = WINDOW_MIN_WIDTH * (9.0 / 16.0) * .5;
+    glfwWindowHint(GLFW_RESIZABLE, GL_TRUE);
     /* will make'em params later */
     const char title[] = "check out nix-meson-glfw";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
     _window = glfwCreateWindow(width, height, title, nullptr, nullptr);
   }
@@ -100,9 +104,11 @@ public:
     ImGui::CreateContext();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 150");
+    ImPlot::CreateContext();
     ImGui::StyleColorsDark();
   }
   ~SafeImGui() {
+    ImPlot::DestroyContext();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -302,6 +308,7 @@ public:
   ~SafeGlTexture() { glDeleteTextures(1, &_texture); }
 
   GLuint texture() const { return _texture; }
+  void *textureVoidStar() const { return (void *)(intptr_t)_texture; }
   void bind() { glBindTexture(GL_TEXTURE_2D, _texture); }
   int xres() const { return _xres; }
   int yres() const { return _yres; }
@@ -371,21 +378,37 @@ int main(int argc, char *argv[]) {
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
-    ImGui::Begin("Demo window");
-    ImGui::Button("Demo button");
+    struct {
+      int x, y;
+    } glfwSize;
+    glfwGetWindowSize(window, &glfwSize.x, &glfwSize.y);
 
-    {
-      /* no horizontal layout out of the box, what a shame */
-      const auto sz = ImGui::GetWindowSize();
-      ImGui::Image((void *)(intptr_t)image0.texture(),
-                   ImVec2(.5 * sz.x, .5 * sz.x * image0.aspect()));
-      ImGui::Image((void *)(intptr_t)image1.texture(),
-                   ImVec2(.5 * sz.x, .5 * sz.x * image1.aspect()));
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(glfwSize.x, .5 * glfwSize.x * image0.aspect()),
+        ImVec2(glfwSize.x,
+               std::max(glfwSize.y * 1.0, .5 * glfwSize.x * image0.aspect())));
+    ImGui::Begin("Window0", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoResize);
+
+    const auto frameSize = ImGui::GetWindowSize();
+    const auto plotSize =
+        ImVec2(frameSize.x, .5 * frameSize.x * image0.aspect());
+
+    if (ImPlot::BeginPlot("Correspondences", nullptr, nullptr, plotSize,
+                          ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
+                              ImPlotFlags_Crosshairs)) {
+      ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(-1.0, 0.0),
+                        ImPlotPoint(0.0, 1.0));
+      ImPlot::PlotImage("im1", image1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
+                        ImPlotPoint(1.0, 1.0));
+      ImPlot::EndPlot();
     }
     ImGui::End();
   }
 
-  std::cout << "Hello, white triangle and imgui!" << std::endl;
+  std::cout << "Hello, ImPlot!" << std::endl;
 
   return 0;
 }

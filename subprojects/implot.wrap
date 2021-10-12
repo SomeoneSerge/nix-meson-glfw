@@ -1,0 +1,10 @@
+[wrap-file]
+directory = implot-0.11
+source_url = https://github.com/epezent/implot/archive/refs/tags/v0.11.tar.gz
+source_filename = implot-0.11.tar.gz
+source_hash = 1ec4c8501f70901132a9f14409c956b508a8ea3fe457e8518325b156dceada00
+patch_directory = implot-0.11
+
+[provide]
+implot = implot_dep
+

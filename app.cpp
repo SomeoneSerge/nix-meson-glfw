@@ -338,6 +338,43 @@ struct AppArgs {
   }
 };
 
+struct DummyHeatmap {
+public:
+  DummyHeatmap(int width, int height) : _w(width), _h(height), _data(_w * _h) {}
+
+  double &operator()(int i, int j) { return _data[i * _w + j]; }
+  const double &operator()(int i, int j) const { return _data[i * _w + j]; }
+
+  double *data() { return _data.data(); }
+  const double *data() const { return _data.data(); }
+
+  double min() const { return _lo; }
+  double max() const { return _hi; }
+
+  int xres() const { return _w; }
+  int yres() const { return _h; }
+
+  void setSdf(const double u0, const double v0) {
+    _lo = std::numeric_limits<double>::max();
+    _hi = std::numeric_limits<double>::min();
+    for (int i = 0; i < _h; ++i) {
+      for (int j = 0; j < _w; ++j) {
+        const double u = (j + .5) / _w, v = (i + .5) / _h;
+        const double f =
+            std::sqrt(std::pow(u - u0, 2.0) + std::pow(v - v0, 2.0));
+        (*this)(i, j) = f;
+        _lo = std::min(f, _lo);
+        _hi = std::max(f, _hi);
+      }
+    }
+  }
+
+private:
+  int _w, _h;
+  double _lo, _hi;
+  std::vector<double> _data; // row-major 2D array
+};
+
 int main(int argc, char *argv[]) {
 
   AppArgs args = AppArgs::parse(argc, argv);
@@ -372,6 +409,9 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path));
   SafeGlTexture image1(oiioLoadImage(args.image1Path));
 
+  ImGuiIO &IO = ImGui::GetIO();
+  DummyHeatmap heatmap(image1.xres(), image1.yres());
+
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);
     ImGuiGlfwFrame imguiFrame;
@@ -403,12 +443,20 @@ int main(int argc, char *argv[]) {
                         ImPlotPoint(0.0, 1.0));
       ImPlot::PlotImage("im1", image1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
                         ImPlotPoint(1.0, 1.0));
+
+      const auto xy = ImPlot::GetPlotMousePos();
+      const auto uv = ImVec2(xy.x + 1.0, 1.0 - xy.y);
+      heatmap.setSdf(uv.x, uv.y);
+      ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
+                          heatmap.yres(), heatmap.xres(), heatmap.min(),
+                          heatmap.max(), nullptr);
+
       ImPlot::EndPlot();
     }
     ImGui::End();
   }
 
-  std::cout << "Hello, ImPlot!" << std::endl;
+  std::cout << "Hello, heatmap!" << std::endl;
 
   return 0;
 }

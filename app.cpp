@@ -354,17 +354,20 @@ public:
   int xres() const { return _w; }
   int yres() const { return _h; }
 
-  void setSdf(const double u0, const double v0) {
+  template <typename F>
+  void setSdf(const double u0, const double v0, const F &f) {
     _lo = std::numeric_limits<double>::max();
     _hi = std::numeric_limits<double>::min();
     for (int i = 0; i < _h; ++i) {
       for (int j = 0; j < _w; ++j) {
         const double u = (j + .5) / _w, v = (i + .5) / _h;
-        const double f =
+        const double sdf =
             std::sqrt(std::pow(u - u0, 2.0) + std::pow(v - v0, 2.0));
-        (*this)(i, j) = f;
-        _lo = std::min(f, _lo);
-        _hi = std::max(f, _hi);
+        // std::abs(u - u0) + std::abs(v - v0);
+        const double val = f(sdf);
+        (*this)(i, j) = val;
+        _lo = std::min(val, _lo);
+        _hi = std::max(val, _hi);
       }
     }
   }
@@ -375,16 +378,43 @@ private:
   std::vector<double> _data; // row-major 2D array
 };
 
-ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
+ImPlotColormap colormapTransparentResample(ImPlotColormap src, int newRes,
+                                           double alpha) {
   const std::string name(std::string(ImPlot::GetColormapName(src)) + "-" +
-                         std::to_string(alpha));
+                         std::to_string(newRes) + "-" + std::to_string(alpha));
   const int size = ImPlot::GetColormapSize(src);
-  std::vector<ImVec4> colors(size);
-  for (int i = 0; i < size; ++i) {
-    colors[i] = ImPlot::GetColormapColor(i);
+  std::vector<ImVec4> colors(newRes);
+  for (int i = 0; i < newRes; ++i) {
+    const auto t = i / (newRes - 1.0);
+    const auto j = t * (size - 1.0);
+    const int j0 = std::floor(j);
+    const int j1 = std::ceil(j);
+    const auto c0 = ImPlot::GetColormapColor((int)j0, src);
+    const auto c1 = ImPlot::GetColormapColor((int)j1, src);
+    if (j1 == j0) {
+      colors[i] = c0;
+    } else {
+      const auto u = j - j0;
+      const auto u1 = j1 - j;
+      colors[i] = ImVec4(u1 * c0.x + u * c1.x, u1 * c0.y + u * c1.y,
+                         u1 * c0.z + u * c1.z, u1 * c0.w + u * c1.w);
+    }
+    colors[i] = c0;
     colors[i].w *= alpha;
   }
-  return ImPlot::AddColormap(name.c_str(), colors.data(), size);
+  return ImPlot::AddColormap(name.c_str(), colors.data(), newRes, false);
+}
+
+ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
+  const int size = ImPlot::GetColormapSize(src);
+  const std::string name(std::string(ImPlot::GetColormapName(src)) + "-" +
+                         std::to_string(size) + "-" + std::to_string(alpha));
+  std::vector<ImVec4> colors(size);
+  for (int i = 0; i < size; ++i) {
+    colors[i] = ImPlot::GetColormapColor(i, src);
+    colors[i].w *= alpha;
+  }
+  return ImPlot::AddColormap(name.c_str(), colors.data(), size, false);
 }
 
 int main(int argc, char *argv[]) {
@@ -421,9 +451,8 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path));
   SafeGlTexture image1(oiioLoadImage(args.image1Path));
 
-  ImGuiIO &IO = ImGui::GetIO();
   DummyHeatmap heatmap(image1.xres(), image1.yres());
-  const auto cmap = colormapTransparentCopy(ImPlotColormap_Jet, .75);
+  const auto cmap = colormapTransparentCopy(ImPlotColormap_Jet, .8);
 
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);
@@ -446,28 +475,39 @@ int main(int argc, char *argv[]) {
                      ImGuiWindowFlags_NoResize);
 
     const auto frameSize = ImGui::GetWindowSize();
+    const auto cmapWidth = 64;
     const auto plotSize =
-        ImVec2(frameSize.x, .5 * frameSize.x * image0.aspect());
+        ImVec2(frameSize.x - cmapWidth,
+               .5 * (frameSize.x - cmapWidth) * image0.aspect());
 
     if (ImPlot::BeginPlot("Correspondences", nullptr, nullptr, plotSize,
                           ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
                               ImPlotFlags_Crosshairs)) {
+      const auto xy = ImPlot::GetPlotMousePos();
+      const auto uv = ImVec2(xy.x + 1.0, 1.0 - xy.y);
+      heatmap.setSdf(uv.x, uv.y, [](const auto sdf) {
+        return std::exp(-4 * std::pow(sdf, 2.0));
+      });
+
       ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(-1.0, 0.0),
                         ImPlotPoint(0.0, 1.0));
       ImPlot::PlotImage("im1", image1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
                         ImPlotPoint(1.0, 1.0));
 
-      const auto xy = ImPlot::GetPlotMousePos();
-      const auto uv = ImVec2(xy.x + 1.0, 1.0 - xy.y);
-      heatmap.setSdf(uv.x, uv.y);
       ImPlot::PushColormap(cmap);
       ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
                           heatmap.yres(), heatmap.xres(), heatmap.min(),
                           heatmap.max(), nullptr);
+
       ImPlot::PopColormap();
 
       ImPlot::EndPlot();
     }
+    ImPlot::PushColormap(cmap);
+    ImGui::SameLine();
+    ImPlot::ColormapScale("ColormapScale", heatmap.min(), heatmap.max(),
+                          ImVec2(cmapWidth, plotSize.y));
+    ImPlot::PopColormap();
     ImGui::End();
   }
 

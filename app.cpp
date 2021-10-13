@@ -375,6 +375,18 @@ private:
   std::vector<double> _data; // row-major 2D array
 };
 
+ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
+  const std::string name(std::string(ImPlot::GetColormapName(src)) + "-" +
+                         std::to_string(alpha));
+  const int size = ImPlot::GetColormapSize(src);
+  std::vector<ImVec4> colors(size);
+  for (int i = 0; i < size; ++i) {
+    colors[i] = ImPlot::GetColormapColor(i);
+    colors[i].w *= alpha;
+  }
+  return ImPlot::AddColormap(name.c_str(), colors.data(), size);
+}
+
 int main(int argc, char *argv[]) {
 
   AppArgs args = AppArgs::parse(argc, argv);
@@ -411,6 +423,7 @@ int main(int argc, char *argv[]) {
 
   ImGuiIO &IO = ImGui::GetIO();
   DummyHeatmap heatmap(image1.xres(), image1.yres());
+  const auto cmap = colormapTransparentCopy(ImPlotColormap_Jet, .75);
 
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);
@@ -447,9 +460,11 @@ int main(int argc, char *argv[]) {
       const auto xy = ImPlot::GetPlotMousePos();
       const auto uv = ImVec2(xy.x + 1.0, 1.0 - xy.y);
       heatmap.setSdf(uv.x, uv.y);
+      ImPlot::PushColormap(cmap);
       ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
                           heatmap.yres(), heatmap.xres(), heatmap.min(),
                           heatmap.max(), nullptr);
+      ImPlot::PopColormap();
 
       ImPlot::EndPlot();
     }

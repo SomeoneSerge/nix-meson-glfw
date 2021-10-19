@@ -6,8 +6,10 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
+#include <msgpack.hpp>
 
 #include <cassert>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -16,8 +18,12 @@
 
 #include <clipp.h>
 
+#include <Eigen/Dense>
+
 // FIXME:
 constexpr double WINDOW_MIN_WIDTH = 800;
+
+using namespace Eigen;
 
 const char *vtxSource = R"glsl(
     #version 150 core
@@ -322,21 +328,72 @@ private:
 struct AppArgs {
   std::string image0Path;
   std::string image1Path;
+  std::string heatmapPath;
 
   static AppArgs parse(int argc, char *argv[]) {
     using namespace clipp;
 
-    std::string image0Path, image1Path;
+    std::string image0Path, image1Path, heatPath;
     auto cli = (value("Path to image A", image0Path),
-                value("Path to image B", image1Path));
+                value("Path to image B", image1Path),
+                value("Path to the heatmap msgpack", heatPath));
 
     if (!clipp::parse(argc, argv, cli)) {
       std::cerr << make_man_page(cli, argv[0]);
       std::exit(1);
     }
-    return AppArgs{image0Path, image1Path};
+    return AppArgs{image0Path, image1Path, heatPath};
   }
 };
+
+struct PackedHeatmaps {
+public:
+  using HeatmapType = Matrix<float, Dynamic, Dynamic, RowMajor>;
+  PackedHeatmaps(int xRes0, int yRes0, int xRes1, int yRes1,
+                 std::vector<float> &&data)
+      : xRes0(xRes0), yRes0(yRes0), xRes1(xRes1), yRes1(yRes1), data(data) {}
+
+  Map<HeatmapType> slice(int i, int j) {
+    return Map<HeatmapType>(data.data() + (i * xRes0 + j), xRes1, yRes1);
+  }
+
+  int xRes0, yRes0, xRes1, yRes1;
+  std::vector<float> data;
+};
+
+struct DeserializedHeatmaps {
+  std::string dtype;
+  std::vector<int> shape;
+  std::vector<float> c_data;
+  std::string dims;
+  MSGPACK_DEFINE(dtype, shape, c_data, dims);
+};
+
+PackedHeatmaps readHeatmaps(int xRes0, int yRes0, int xRes1, int yRes1,
+                            const std::string &path) {
+  std::ifstream ifs{path};
+  std::istreambuf_iterator<char> begin{ifs};
+  std::istreambuf_iterator<char> end;
+  std::string buf(begin, end);
+
+  msgpack::object_handle oh = msgpack::unpack(buf.data(), buf.size());
+
+  DeserializedHeatmaps deserialized;
+
+  oh.get().convert(deserialized);
+
+  const int nPixels0 = *(deserialized.shape.end() - 2);
+  const int nPixels1 = *(deserialized.shape.end() - 1);
+
+  if (xRes0 * yRes0 != nPixels0)
+    throw std::runtime_error("image0 wrong resolution");
+
+  if (xRes1 * yRes1 != nPixels1)
+    throw std::runtime_error("image1 wrong resolution");
+
+  return PackedHeatmaps(xRes0, yRes0, xRes1, yRes1,
+                        std::move(deserialized.c_data));
+}
 
 struct DummyHeatmap {
 public:
@@ -451,8 +508,9 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path));
   SafeGlTexture image1(oiioLoadImage(args.image1Path));
 
-  DummyHeatmap heatmap(image1.xres(), image1.yres());
   const auto cmap = colormapTransparentCopy(ImPlotColormap_Jet, .8);
+  // DummyHeatmap heatmap(image1.xres(), image1.yres());
+  PackedHeatmaps heatmaps = readHeatmaps(135, 240, 135, 240, args.heatmapPath);
 
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);
@@ -480,14 +538,15 @@ int main(int argc, char *argv[]) {
         ImVec2(frameSize.x - cmapWidth,
                .5 * (frameSize.x - cmapWidth) * image0.aspect());
 
+    float heatmapMin(0), heatmapMax(1);
     if (ImPlot::BeginPlot("Correspondences", nullptr, nullptr, plotSize,
                           ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
                               ImPlotFlags_Crosshairs)) {
       const auto xy = ImPlot::GetPlotMousePos();
       const auto uv = ImVec2(xy.x + 1.0, 1.0 - xy.y);
-      heatmap.setSdf(uv.x, uv.y, [](const auto sdf) {
-        return std::exp(-4 * std::pow(sdf, 2.0));
-      });
+      const int i = uv.y * heatmaps.yRes0;
+      const int j = uv.x * heatmaps.xRes0;
+      const auto heatmap = heatmaps.slice(i, j);
 
       ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(-1.0, 0.0),
                         ImPlotPoint(0.0, 1.0));
@@ -496,16 +555,18 @@ int main(int argc, char *argv[]) {
 
       ImPlot::PushColormap(cmap);
       ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
-                          heatmap.yres(), heatmap.xres(), heatmap.min(),
-                          heatmap.max(), nullptr);
+                          heatmap.rows(), heatmap.cols(), heatmap.minCoeff(),
+                          heatmap.maxCoeff(), nullptr);
 
       ImPlot::PopColormap();
 
       ImPlot::EndPlot();
+      heatmapMin = heatmap.minCoeff();
+      heatmapMax = heatmap.maxCoeff();
     }
     ImPlot::PushColormap(cmap);
     ImGui::SameLine();
-    ImPlot::ColormapScale("ColormapScale", heatmap.min(), heatmap.max(),
+    ImPlot::ColormapScale("ColormapScale", heatmapMin, heatmapMax,
                           ImVec2(cmapWidth, plotSize.y));
     ImPlot::PopColormap();
     ImGui::End();

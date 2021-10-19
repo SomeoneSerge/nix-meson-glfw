@@ -14,5 +14,5 @@ let
 in
 mkShell {
   nativeBuildInputs = [ pkgconfig meson valgrind ];
-  buildInputs = [ clang ninja glfw3 glew xorg.libX11 oiio-pc openexr.dev ];
+  buildInputs = [ clang ninja glfw3 glew xorg.libX11 oiio-pc openexr.dev msgpack msgpack-tools ];
 }

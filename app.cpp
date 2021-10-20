@@ -6,7 +6,6 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
-#include <msgpack.hpp>
 
 #include <cassert>
 #include <fstream>
@@ -17,6 +16,8 @@
 #include <OpenImageIO/imageio.h>
 
 #include <clipp.h>
+#include <filesystem>
+#include <nlohmann/json.hpp>
 
 #include <Eigen/Dense>
 
@@ -329,110 +330,77 @@ struct AppArgs {
   std::string image0Path;
   std::string image1Path;
   std::string heatmapPath;
+  bool fix01Scale = false;
+  float heatmapAlpha = 0.75;
 
-  static AppArgs parse(int argc, char *argv[]) {
+  AppArgs(int argc, char *argv[]) {
     using namespace clipp;
 
-    std::string image0Path, image1Path, heatPath;
-    auto cli = (value("Path to image A", image0Path),
-                value("Path to image B", image1Path),
-                value("Path to the heatmap msgpack", heatPath));
+    auto cli =
+        (value("Path to image A", image0Path),
+         value("Path to image B", image1Path),
+         value("Path to the heatmap dir (tifs plus layout.json)", heatmapPath),
+         option("-01", "--fix-01-scale")
+             .set(fix01Scale)
+             .doc("Fix the heatmap scale to [0..1]. Otherwise, adjust to "
+                  "current min/max values"),
+         option("-a", "--heatmap-alpha") &
+             value("alpha", heatmapAlpha) %
+                 "Transparency of the heatmap overlay");
 
     if (!clipp::parse(argc, argv, cli)) {
       std::cerr << make_man_page(cli, argv[0]);
       std::exit(1);
     }
-    return AppArgs{image0Path, image1Path, heatPath};
   }
 };
 
-struct PackedHeatmaps {
-public:
-  using HeatmapType = Matrix<float, Dynamic, Dynamic, RowMajor>;
-  PackedHeatmaps(int xRes0, int yRes0, int xRes1, int yRes1,
-                 std::vector<float> &&data)
-      : xRes0(xRes0), yRes0(yRes0), xRes1(xRes1), yRes1(yRes1), data(data) {}
+struct HeatmapsDir {
+  HeatmapsDir(const std::filesystem::path &dir) : root(dir) {
+    using json = nlohmann::json;
 
-  Map<HeatmapType> slice(int i, int j) {
-    return Map<HeatmapType>(data.data() + (i * xRes0 + j), xRes1, yRes1);
+    const auto layoutPath = dir / "layout.json";
+    std::ifstream fLayout(layoutPath);
+    json j;
+    fLayout >> j;
+
+    std::tie(h0, w0, h1, w1) = (std::tuple<int, int, int, int>)j.at("shape");
+    if ((std::string)j.at("dtype") != "float32")
+      throw std::runtime_error("only float32 supported");
   }
 
-  int xRes0, yRes0, xRes1, yRes1;
-  std::vector<float> data;
-};
+  std::filesystem::path slicePath(int i, int j) const {
+    std::stringstream s;
+    s << std::setfill('0') << std::setw(9) << i << "," << std::setfill('0')
+      << std::setw(9) << j << ".tif";
+    return root / s.str();
+  }
 
-struct DeserializedHeatmaps {
-  std::string dtype;
-  std::vector<int> shape;
-  std::vector<float> c_data;
-  std::string dims;
-  MSGPACK_DEFINE(dtype, shape, c_data, dims);
-};
+  Matrix<float, Dynamic, Dynamic, RowMajor> slice(int i, int j) const {
+    // TODO: cache
 
-PackedHeatmaps readHeatmaps(int xRes0, int yRes0, int xRes1, int yRes1,
-                            const std::string &path) {
-  std::ifstream ifs{path};
-  std::istreambuf_iterator<char> begin{ifs};
-  std::istreambuf_iterator<char> end;
-  std::string buf(begin, end);
+    using namespace OIIO;
 
-  msgpack::object_handle oh = msgpack::unpack(buf.data(), buf.size());
-
-  DeserializedHeatmaps deserialized;
-
-  oh.get().convert(deserialized);
-
-  const int nPixels0 = *(deserialized.shape.end() - 2);
-  const int nPixels1 = *(deserialized.shape.end() - 1);
-
-  if (xRes0 * yRes0 != nPixels0)
-    throw std::runtime_error("image0 wrong resolution");
-
-  if (xRes1 * yRes1 != nPixels1)
-    throw std::runtime_error("image1 wrong resolution");
-
-  return PackedHeatmaps(xRes0, yRes0, xRes1, yRes1,
-                        std::move(deserialized.c_data));
-}
-
-struct DummyHeatmap {
-public:
-  DummyHeatmap(int width, int height) : _w(width), _h(height), _data(_w * _h) {}
-
-  double &operator()(int i, int j) { return _data[i * _w + j]; }
-  const double &operator()(int i, int j) const { return _data[i * _w + j]; }
-
-  double *data() { return _data.data(); }
-  const double *data() const { return _data.data(); }
-
-  double min() const { return _lo; }
-  double max() const { return _hi; }
-
-  int xres() const { return _w; }
-  int yres() const { return _h; }
-
-  template <typename F>
-  void setSdf(const double u0, const double v0, const F &f) {
-    _lo = std::numeric_limits<double>::max();
-    _hi = std::numeric_limits<double>::min();
-    for (int i = 0; i < _h; ++i) {
-      for (int j = 0; j < _w; ++j) {
-        const double u = (j + .5) / _w, v = (i + .5) / _h;
-        const double sdf =
-            std::sqrt(std::pow(u - u0, 2.0) + std::pow(v - v0, 2.0));
-        // std::abs(u - u0) + std::abs(v - v0);
-        const double val = f(sdf);
-        (*this)(i, j) = val;
-        _lo = std::min(val, _lo);
-        _hi = std::max(val, _hi);
-      }
+    auto in = ImageInput::open(slicePath(i, j));
+    if (!in) {
+      std::cerr << "Couldn't load" << slicePath(i, j) << std::endl;
+      throw std::runtime_error("Couldn't load the image");
     }
+
+    const ImageSpec &spec = in->spec();
+    int xres = spec.width;
+    int yres = spec.height;
+
+    Matrix<float, Dynamic, Dynamic, RowMajor> m(yres, xres);
+
+    in->read_image(TypeDesc::FLOAT, m.data());
+    in->close(); /* eh... why not raii, I now have to wrap it in try-catch and I
+                    don't want to */
+    return m;
   }
 
-private:
-  int _w, _h;
-  double _lo, _hi;
-  std::vector<double> _data; // row-major 2D array
+  std::filesystem::path root;
+  int h0, w0, h1, w1;
 };
 
 ImPlotColormap colormapTransparentResample(ImPlotColormap src, int newRes,
@@ -476,7 +444,7 @@ ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
 
 int main(int argc, char *argv[]) {
 
-  AppArgs args = AppArgs::parse(argc, argv);
+  AppArgs args(argc, argv);
 
   SafeGlfwCtx ctx;
   SafeGlfwWindow safeWindow;
@@ -508,9 +476,9 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path));
   SafeGlTexture image1(oiioLoadImage(args.image1Path));
 
-  const auto cmap = colormapTransparentCopy(ImPlotColormap_Jet, .8);
-  // DummyHeatmap heatmap(image1.xres(), image1.yres());
-  PackedHeatmaps heatmaps = readHeatmaps(135, 240, 135, 240, args.heatmapPath);
+  const auto cmap =
+      colormapTransparentCopy(ImPlotColormap_Jet, args.heatmapAlpha);
+  HeatmapsDir heatmaps(args.heatmapPath);
 
   while (!glfwWindowShouldClose(window)) {
     GlfwFrame glfwFrame(window);
@@ -533,7 +501,7 @@ int main(int argc, char *argv[]) {
                      ImGuiWindowFlags_NoResize);
 
     const auto frameSize = ImGui::GetWindowSize();
-    const auto cmapWidth = 64;
+    const auto cmapWidth = 128;
     const auto plotSize =
         ImVec2(frameSize.x - cmapWidth,
                .5 * (frameSize.x - cmapWidth) * image0.aspect());
@@ -544,9 +512,16 @@ int main(int argc, char *argv[]) {
                               ImPlotFlags_Crosshairs)) {
       const auto xy = ImPlot::GetPlotMousePos();
       const auto uv = ImVec2(xy.x + 1.0, 1.0 - xy.y);
-      const int i = uv.y * heatmaps.yRes0;
-      const int j = uv.x * heatmaps.xRes0;
+      const auto i =
+          std::max(0, std::min((int)(uv.y * heatmaps.h0), heatmaps.h0 - 1));
+      const auto j =
+          std::max(0, std::min((int)(uv.x * heatmaps.w0), heatmaps.w0 - 1));
       const auto heatmap = heatmaps.slice(i, j);
+
+      if (!args.fix01Scale) {
+        heatmapMin = heatmap.minCoeff();
+        heatmapMax = heatmap.maxCoeff();
+      }
 
       ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(-1.0, 0.0),
                         ImPlotPoint(0.0, 1.0));
@@ -555,14 +530,12 @@ int main(int argc, char *argv[]) {
 
       ImPlot::PushColormap(cmap);
       ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
-                          heatmap.rows(), heatmap.cols(), heatmap.minCoeff(),
-                          heatmap.maxCoeff(), nullptr);
+                          heatmap.rows(), heatmap.cols(), heatmapMin,
+                          heatmapMax, nullptr);
 
       ImPlot::PopColormap();
 
       ImPlot::EndPlot();
-      heatmapMin = heatmap.minCoeff();
-      heatmapMax = heatmap.maxCoeff();
     }
     ImPlot::PushColormap(cmap);
     ImGui::SameLine();

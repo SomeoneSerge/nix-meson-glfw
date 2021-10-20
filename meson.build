@@ -17,10 +17,13 @@ clipp_dep = clipp.get_variable('clipp_dep')
 eigen = subproject('eigen')
 eigen_dep = eigen.get_variable('eigen_dep')
 
+json = subproject('json')
+json_dep = json.get_variable('nlohmann_json_dep')
+
 oiio = dependency('openimageio2')
 openexr = dependency('OpenEXR')
 
 msgpack = dependency('msgpack')
 
 executable('nix-meson-glfw', 'app.cpp',
-  dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp_dep, msgpack, eigen_dep ])
+  dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp_dep, msgpack, eigen_dep, json_dep ])

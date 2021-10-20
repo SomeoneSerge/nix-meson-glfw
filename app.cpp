@@ -442,6 +442,17 @@ ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
   return ImPlot::AddColormap(name.c_str(), colors.data(), size, false);
 }
 
+struct Message {
+  double u0, v0; // cursor position in plot 0
+  bool hover0 = false;
+  double heatMin = 0, heatMax = 1;
+  int iSlice = 0, jSlice = 0;
+};
+
+struct State : Message {
+  Matrix<float, Dynamic, Dynamic, RowMajor> heat;
+};
+
 int main(int argc, char *argv[]) {
 
   AppArgs args(argc, argv);
@@ -480,7 +491,11 @@ int main(int argc, char *argv[]) {
       colormapTransparentCopy(ImPlotColormap_Jet, args.heatmapAlpha);
   HeatmapsDir heatmaps(args.heatmapPath);
 
+  State state;
+
   while (!glfwWindowShouldClose(window)) {
+    Message msg;
+
     GlfwFrame glfwFrame(window);
     ImGuiGlfwFrame imguiFrame;
 
@@ -501,48 +516,76 @@ int main(int argc, char *argv[]) {
                      ImGuiWindowFlags_NoResize);
 
     const auto frameSize = ImGui::GetWindowSize();
-    const auto cmapWidth = 128;
+    const auto cmapWidth = 100;
     const auto plotSize =
-        ImVec2(frameSize.x - cmapWidth,
+        ImVec2(.5 * (frameSize.x - cmapWidth),
                .5 * (frameSize.x - cmapWidth) * image0.aspect());
 
-    float heatmapMin(0), heatmapMax(1);
-    if (ImPlot::BeginPlot("Correspondences", nullptr, nullptr, plotSize,
+    if (ImPlot::BeginPlot("Image0", nullptr, nullptr, plotSize,
                           ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
                               ImPlotFlags_Crosshairs)) {
       const auto xy = ImPlot::GetPlotMousePos();
-      const auto uv = ImVec2(xy.x + 1.0, 1.0 - xy.y);
+      const auto uv = ImVec2(xy.x, 1.0 - xy.y);
+      msg.u0 = uv.x;
+      msg.v0 = uv.y;
+
+      msg.hover0 = ImPlot::IsPlotHovered();
+
       const auto i =
           std::max(0, std::min((int)(uv.y * heatmaps.h0), heatmaps.h0 - 1));
       const auto j =
           std::max(0, std::min((int)(uv.x * heatmaps.w0), heatmaps.w0 - 1));
-      const auto heatmap = heatmaps.slice(i, j);
+      msg.iSlice = i;
+      msg.jSlice = j;
 
-      if (!args.fix01Scale) {
-        heatmapMin = heatmap.minCoeff();
-        heatmapMax = heatmap.maxCoeff();
+      ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(0.0, 0.0),
+                        ImPlotPoint(1.0, 1.0));
+      ImPlot::EndPlot();
+    }
+
+    ImGui::SameLine();
+
+    if (ImPlot::BeginPlot("Image1", nullptr, nullptr, plotSize,
+                          ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
+                              ImPlotFlags_Crosshairs)) {
+      bool cachedSlice =
+          msg.iSlice == state.iSlice && msg.jSlice == state.jSlice;
+
+      if (!cachedSlice) {
+        state.heat = heatmaps.slice(msg.iSlice, msg.jSlice);
       }
 
-      ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(-1.0, 0.0),
-                        ImPlotPoint(0.0, 1.0));
+      const auto heatmap = state.heat;
+
+      if (args.fix01Scale) {
+        msg.heatMin = 0;
+        msg.heatMax = 1;
+      } else {
+        msg.heatMin = heatmap.minCoeff();
+        msg.heatMax = heatmap.maxCoeff();
+      }
+
       ImPlot::PlotImage("im1", image1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
                         ImPlotPoint(1.0, 1.0));
 
       ImPlot::PushColormap(cmap);
       ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
-                          heatmap.rows(), heatmap.cols(), heatmapMin,
-                          heatmapMax, nullptr);
+                          heatmap.rows(), heatmap.cols(), msg.heatMin,
+                          msg.heatMax, nullptr);
 
       ImPlot::PopColormap();
 
       ImPlot::EndPlot();
     }
+
     ImPlot::PushColormap(cmap);
     ImGui::SameLine();
-    ImPlot::ColormapScale("ColormapScale", heatmapMin, heatmapMax,
+    ImPlot::ColormapScale("ColormapScale", msg.heatMin, msg.heatMax,
                           ImVec2(cmapWidth, plotSize.y));
     ImPlot::PopColormap();
     ImGui::End();
+
+    static_cast<Message &>(state) = msg;
   }
 
   std::cout << "Hello, heatmap!" << std::endl;

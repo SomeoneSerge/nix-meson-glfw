@@ -331,7 +331,7 @@ struct AppArgs {
   std::string image1Path;
   std::string heatmapPath;
   bool fix01Scale = false;
-  float heatmapAlpha = 0.75;
+  float heatmapAlpha = 0.6;
 
   AppArgs(int argc, char *argv[]) {
     using namespace clipp;
@@ -371,8 +371,8 @@ struct HeatmapsDir {
 
   std::filesystem::path slicePath(int i, int j) const {
     std::stringstream s;
-    s << std::setfill('0') << std::setw(9) << i << "," << std::setfill('0')
-      << std::setw(9) << j << ".tif";
+    s << std::setfill('0') << std::setw(7) << i << "," << std::setfill('0')
+      << std::setw(7) << j << ".tif";
     return root / s.str();
   }
 
@@ -390,6 +390,9 @@ struct HeatmapsDir {
     const ImageSpec &spec = in->spec();
     int xres = spec.width;
     int yres = spec.height;
+
+    if (xres * yres == 0)
+      throw std::runtime_error("Loaded image was empty");
 
     Matrix<float, Dynamic, Dynamic, RowMajor> m(yres, xres);
 
@@ -430,16 +433,36 @@ ImPlotColormap colormapTransparentResample(ImPlotColormap src, int newRes,
   return ImPlot::AddColormap(name.c_str(), colors.data(), newRes, false);
 }
 
+double normalizeAlpha(double alpha) {
+  return std::max(std::min(std::round(alpha * 100.0) / 100.0, 1.0), 0.0);
+}
+
+std::string alphaToString(double alpha) {
+  return std::to_string(normalizeAlpha(alpha));
+}
+
 ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
   const int size = ImPlot::GetColormapSize(src);
-  const std::string name(std::string(ImPlot::GetColormapName(src)) + "-" +
-                         std::to_string(size) + "-" + std::to_string(alpha));
+  alpha = normalizeAlpha(alpha);
+  const std::string name(alphaToString(alpha) + "_" +
+                         std::string(ImPlot::GetColormapName(src)) + "_" +
+                         std::to_string(size));
+
+  {
+    const auto id = ImPlot::GetColormapIndex(name.c_str());
+    if (id != -1)
+      return id;
+  }
+
   std::vector<ImVec4> colors(size);
   for (int i = 0; i < size; ++i) {
     colors[i] = ImPlot::GetColormapColor(i, src);
     colors[i].w *= alpha;
   }
-  return ImPlot::AddColormap(name.c_str(), colors.data(), size, false);
+
+  const auto cmap =
+      ImPlot::AddColormap(name.c_str(), colors.data(), size, false);
+  return cmap;
 }
 
 struct Message {
@@ -447,9 +470,10 @@ struct Message {
   bool hover0 = false;
   double heatMin = 0, heatMax = 1;
   int iSlice = 0, jSlice = 0;
+  float alpha = 1.0;
 };
 
-struct State : Message {
+struct State : public Message {
   Matrix<float, Dynamic, Dynamic, RowMajor> heat;
 };
 
@@ -487,14 +511,20 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path));
   SafeGlTexture image1(oiioLoadImage(args.image1Path));
 
-  const auto cmap =
-      colormapTransparentCopy(ImPlotColormap_Jet, args.heatmapAlpha);
   HeatmapsDir heatmaps(args.heatmapPath);
 
   State state;
+  state.alpha = args.heatmapAlpha;
+
+  constexpr auto defaultWindowOptions = ImGuiWindowFlags_NoDecoration |
+                                        ImGuiWindowFlags_NoBackground |
+                                        ImGuiWindowFlags_NoResize;
+  constexpr auto defaultPlotOptions =
+      ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased | ImPlotFlags_Crosshairs;
 
   while (!glfwWindowShouldClose(window)) {
-    Message msg;
+    Message msg{
+        .iSlice = state.iSlice, .jSlice = state.jSlice, .alpha = state.alpha};
 
     GlfwFrame glfwFrame(window);
     ImGuiGlfwFrame imguiFrame;
@@ -506,14 +536,27 @@ int main(int argc, char *argv[]) {
     } glfwSize;
     glfwGetWindowSize(window, &glfwSize.x, &glfwSize.y);
 
+    const auto toolboxHeight = ImGui::GetTextLineHeightWithSpacing() * 2;
     ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(glfwSize.x, toolboxHeight),
+                                        ImVec2(glfwSize.x, toolboxHeight));
+
+    if (ImGui::Begin("Toolbox", nullptr, defaultWindowOptions)) {
+      ImGui::SliderFloat("Heatmap Alpha", &msg.alpha, 0.0, 1.0);
+      msg.alpha = normalizeAlpha(msg.alpha);
+    }
+    ImGui::End();
+
+    const auto cmap = colormapTransparentCopy(ImPlotColormap_Jet, msg.alpha);
+
+    const auto workArea = ImVec2(glfwSize.x, glfwSize.y - toolboxHeight);
+    const auto neededArea =
+        ImVec2(workArea.x, .5 * workArea.x * image0.aspect());
+    ImGui::SetNextWindowPos(ImVec2(0, toolboxHeight));
     ImGui::SetNextWindowSizeConstraints(
-        ImVec2(glfwSize.x, .5 * glfwSize.x * image0.aspect()),
-        ImVec2(glfwSize.x,
-               std::max(glfwSize.y * 1.0, .5 * glfwSize.x * image0.aspect())));
-    ImGui::Begin("Window0", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
-                     ImGuiWindowFlags_NoResize);
+        neededArea,
+        ImVec2(neededArea.x, std::max<double>(glfwSize.y, neededArea.y)));
+    ImGui::Begin("Window0", nullptr, defaultWindowOptions);
 
     const auto frameSize = ImGui::GetWindowSize();
     const auto cmapWidth = 100;
@@ -522,8 +565,7 @@ int main(int argc, char *argv[]) {
                .5 * (frameSize.x - cmapWidth) * image0.aspect());
 
     if (ImPlot::BeginPlot("Image0", nullptr, nullptr, plotSize,
-                          ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
-                              ImPlotFlags_Crosshairs)) {
+                          defaultPlotOptions)) {
       const auto xy = ImPlot::GetPlotMousePos();
       const auto uv = ImVec2(xy.x, 1.0 - xy.y);
       msg.u0 = uv.x;
@@ -543,13 +585,19 @@ int main(int argc, char *argv[]) {
       ImPlot::EndPlot();
     }
 
+    if (!msg.hover0) {
+      msg.iSlice = state.iSlice;
+      msg.jSlice = state.jSlice;
+    }
+
     ImGui::SameLine();
 
     if (ImPlot::BeginPlot("Image1", nullptr, nullptr, plotSize,
                           ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
                               ImPlotFlags_Crosshairs)) {
-      bool cachedSlice =
-          msg.iSlice == state.iSlice && msg.jSlice == state.jSlice;
+      bool cachedSlice = msg.iSlice == state.iSlice &&
+                         msg.jSlice == state.jSlice && state.heat.rows() > 0 &&
+                         state.heat.cols() > 0;
 
       if (!cachedSlice) {
         state.heat = heatmaps.slice(msg.iSlice, msg.jSlice);
@@ -583,12 +631,11 @@ int main(int argc, char *argv[]) {
     ImPlot::ColormapScale("ColormapScale", msg.heatMin, msg.heatMax,
                           ImVec2(cmapWidth, plotSize.y));
     ImPlot::PopColormap();
+
     ImGui::End();
 
     static_cast<Message &>(state) = msg;
   }
-
-  std::cout << "Hello, heatmap!" << std::endl;
 
   return 0;
 }

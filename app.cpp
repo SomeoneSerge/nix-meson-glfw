@@ -8,9 +8,11 @@
 #include <implot.h>
 
 #include <cassert>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <regex>
 #include <string>
 
 #include <OpenImageIO/imageio.h>
@@ -25,6 +27,7 @@
 constexpr double WINDOW_MIN_WIDTH = 800;
 
 using namespace Eigen;
+namespace fs = std::filesystem;
 
 const char *vtxSource = R"glsl(
     #version 150 core
@@ -329,17 +332,19 @@ private:
 struct AppArgs {
   std::string image0Path;
   std::string image1Path;
-  std::string heatmapPath;
+  std::string tracePath;
   bool fix01Scale = false;
   float heatmapAlpha = 0.6;
 
   AppArgs(int argc, char *argv[]) {
     using namespace clipp;
 
+    bool image0set = false, image1set = false;
+
     auto cli =
-        (value("Path to image A", image0Path),
-         value("Path to image B", image1Path),
-         value("Path to the heatmap dir (tifs plus layout.json)", heatmapPath),
+        (value("Path to the heatmap dir (tifs plus layout.json)", tracePath),
+         option("--image0").set(image0set) & opt_value("path", image0Path),
+         option("--image1").set(image1set) & opt_value("path", image1Path),
          option("-01", "--fix-01-scale")
              .set(fix01Scale)
              .doc("Fix the heatmap scale to [0..1]. Otherwise, adjust to "
@@ -352,28 +357,79 @@ struct AppArgs {
       std::cerr << make_man_page(cli, argv[0]);
       std::exit(1);
     }
+    if (!image0set) {
+      image0Path = fs::path(tracePath) / "image0.tif";
+    }
+    if (!image1set) {
+      image1Path = fs::path(tracePath) / "image1.tif";
+    }
   }
 };
 
-struct HeatmapsDir {
-  HeatmapsDir(const std::filesystem::path &dir) : root(dir) {
+struct LayoutJson {
+  LayoutJson(const fs::path &path) {
     using json = nlohmann::json;
-
-    const auto layoutPath = dir / "layout.json";
-    std::ifstream fLayout(layoutPath);
+    std::ifstream fLayout(path);
     json j;
     fLayout >> j;
 
-    std::tie(h0, w0, h1, w1) = (std::tuple<int, int, int, int>)j.at("shape");
-    if ((std::string)j.at("dtype") != "float32")
-      throw std::runtime_error("only float32 supported");
+    shape = (std::vector<int>)j.at("shape");
+    dtype = j.at("dtype");
+  }
+  std::vector<int> shape;
+  std::string dtype;
+};
+
+std::tuple<int, int> indexFromName(const std::string &filename) {
+  static const std::regex regex("(?:0*([0-9]+),)*0*([0-9]+)\\.tif");
+
+  std::vector<int> indices;
+  std::smatch sm;
+  std::regex_match(filename, sm, regex);
+
+  for (auto i = 1; i < sm.size(); ++i) {
+    indices.push_back(std::stoi(sm[i]));
   }
 
-  std::filesystem::path slicePath(int i, int j) const {
-    std::stringstream s;
-    s << std::setfill('0') << std::setw(7) << i << "," << std::setfill('0')
-      << std::setw(7) << j << ".tif";
-    return root / s.str();
+  if (indices.size() != 2) {
+    std::cerr << "Expected two indices in the name, got " << indices.size()
+              << std::endl;
+    throw std::runtime_error("Not a 4D field");
+  }
+  return std::make_tuple(indices[0], indices[1]);
+}
+
+struct HeatmapsDir {
+  HeatmapsDir(const fs::path &layoutPath) : root(layoutPath.parent_path()) {
+    const auto layout = LayoutJson(layoutPath);
+
+    if (layout.shape.size() != 4)
+      throw std::runtime_error("Not a 4D field");
+    if (layout.dtype != "float32")
+      throw std::runtime_error("only float32 supported");
+
+    h0 = layout.shape[0];
+    w0 = layout.shape[1];
+    h1 = layout.shape[2];
+    w1 = layout.shape[3];
+
+    slices.reserve(h0 * w0);
+    sliceIndices = -Eigen::Array<int, Dynamic, Dynamic, RowMajor>::Ones(h0, w0);
+
+    for (auto &p : fs::directory_iterator(root)) {
+      const auto name = p.path().filename();
+
+      if (name.extension() != ".tif")
+        continue;
+
+      auto [i, j] = indexFromName(name);
+      sliceIndices(i, j) = slices.size();
+      slices.push_back(p.path());
+    }
+  }
+
+  std::optional<fs::path> slicePath(int i, int j) const {
+    return slices[sliceIndices(i, j)];
   }
 
   Matrix<float, Dynamic, Dynamic, RowMajor> slice(int i, int j) const {
@@ -381,9 +437,15 @@ struct HeatmapsDir {
 
     using namespace OIIO;
 
-    auto in = ImageInput::open(slicePath(i, j));
+    const auto path = slicePath(i, j);
+
+    if (!path)
+      return Eigen::Matrix<float, Dynamic, Dynamic, RowMajor>::Constant(
+          h1, w1, std::numeric_limits<float>::quiet_NaN());
+
+    auto in = ImageInput::open(path.value());
     if (!in) {
-      std::cerr << "Couldn't load" << slicePath(i, j) << std::endl;
+      std::cerr << "Couldn't load" << path.value() << std::endl;
       throw std::runtime_error("Couldn't load the image");
     }
 
@@ -402,8 +464,10 @@ struct HeatmapsDir {
     return m;
   }
 
-  std::filesystem::path root;
   int h0, w0, h1, w1;
+  fs::path root;
+  std::vector<fs::path> slices;
+  Eigen::Array<int, Dynamic, Dynamic, RowMajor> sliceIndices;
 };
 
 ImPlotColormap colormapTransparentResample(ImPlotColormap src, int newRes,
@@ -466,20 +530,56 @@ ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
 }
 
 struct Message {
-  double u0, v0; // cursor position in plot 0
-  bool hover0 = false;
+  double u0 = .5, v0 = .5; // cursor position in plot 0
   double heatMin = 0, heatMax = 1;
   int iSlice = 0, jSlice = 0;
   float alpha = 1.0;
+  int idVolume = 0;
+  std::chrono::time_point<std::chrono::system_clock> lastHeatmapSwitch;
 };
 
 struct State : public Message {
   Matrix<float, Dynamic, Dynamic, RowMajor> heat;
 };
 
+struct TraceDir {
+  TraceDir(fs::path root) {
+    std::vector<fs::path> heatmaps;
+    for (auto &p : fs::recursive_directory_iterator(root)) {
+      if (p.path().filename() != "layout.json")
+        continue;
+
+      LayoutJson layout(p.path());
+      if (layout.shape.size() != 4)
+        continue;
+
+      heatmaps.push_back(p);
+    }
+
+    names.reserve(heatmaps.size());
+    namesCStr.reserve(heatmaps.size());
+    volumes.reserve(heatmaps.size());
+
+    for (auto &p : heatmaps)
+      volumes.push_back(HeatmapsDir(p));
+
+    for (auto &p : heatmaps)
+      names.push_back(p.parent_path().lexically_relative(root).string());
+
+    for (auto &s : names)
+      namesCStr.push_back(s.c_str());
+  }
+
+  std::vector<HeatmapsDir> volumes;
+  std::vector<std::string> names;
+  std::vector<const char *> namesCStr;
+};
+
 int main(int argc, char *argv[]) {
 
   AppArgs args(argc, argv);
+
+  TraceDir trace(args.tracePath);
 
   SafeGlfwCtx ctx;
   SafeGlfwWindow safeWindow;
@@ -511,8 +611,6 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path));
   SafeGlTexture image1(oiioLoadImage(args.image1Path));
 
-  HeatmapsDir heatmaps(args.heatmapPath);
-
   State state;
   state.alpha = args.heatmapAlpha;
 
@@ -523,8 +621,13 @@ int main(int argc, char *argv[]) {
       ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased | ImPlotFlags_Crosshairs;
 
   while (!glfwWindowShouldClose(window)) {
-    Message msg{
-        .iSlice = state.iSlice, .jSlice = state.jSlice, .alpha = state.alpha};
+    Message msg{.u0 = state.u0,
+                .v0 = state.v0,
+                .iSlice = state.iSlice,
+                .jSlice = state.jSlice,
+                .alpha = state.alpha,
+                .idVolume = state.idVolume,
+                .lastHeatmapSwitch = state.lastHeatmapSwitch};
 
     GlfwFrame glfwFrame(window);
     ImGuiGlfwFrame imguiFrame;
@@ -536,7 +639,7 @@ int main(int argc, char *argv[]) {
     } glfwSize;
     glfwGetWindowSize(window, &glfwSize.x, &glfwSize.y);
 
-    const auto toolboxHeight = ImGui::GetTextLineHeightWithSpacing() * 2;
+    const auto toolboxHeight = ImGui::GetTextLineHeightWithSpacing() * 6;
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSizeConstraints(ImVec2(glfwSize.x, toolboxHeight),
                                         ImVec2(glfwSize.x, toolboxHeight));
@@ -544,10 +647,25 @@ int main(int argc, char *argv[]) {
     if (ImGui::Begin("Toolbox", nullptr, defaultWindowOptions)) {
       ImGui::SliderFloat("Heatmap Alpha", &msg.alpha, 0.0, 1.0);
       msg.alpha = normalizeAlpha(msg.alpha);
+
+      ImGui::ListBox("Heatmaps", &msg.idVolume, trace.namesCStr.data(),
+                     trace.namesCStr.size());
     }
     ImGui::End();
 
-    const auto cmap = colormapTransparentCopy(ImPlotColormap_Viridis, msg.alpha);
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+      const auto t = std::chrono::system_clock::now();
+      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          t - state.lastHeatmapSwitch);
+      if (ms.count() > 300) {
+        msg.idVolume = (msg.idVolume + 1) % trace.volumes.size();
+        msg.lastHeatmapSwitch = t;
+      }
+    }
+
+    auto &heatmaps = trace.volumes[msg.idVolume];
+    const auto cmap =
+        colormapTransparentCopy(ImPlotColormap_Viridis, msg.alpha);
 
     const auto workArea = ImVec2(glfwSize.x, glfwSize.y - toolboxHeight);
     const auto neededArea =
@@ -566,12 +684,27 @@ int main(int argc, char *argv[]) {
 
     if (ImPlot::BeginPlot("Image0", nullptr, nullptr, plotSize,
                           defaultPlotOptions)) {
-      const auto xy = ImPlot::GetPlotMousePos();
-      const auto uv = ImVec2(xy.x, 1.0 - xy.y);
+      ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(0.0, 0.0),
+                        ImPlotPoint(1.0, 1.0));
+
+      const auto xyNew = ImPlot::GetPlotMousePos();
+      ImPlotPoint xyDrag(state.u0, 1.0 - state.v0);
+
+      const auto queryColor = ImVec4(255 / 255.0, 99 / 255.0, 71 / 255.0, 1.0);
+      if (ImPlot::DragPoint("Query", &xyDrag.x, &xyDrag.y, true, queryColor, 6)) {
+        xyDrag.x = xyNew.x;
+        xyDrag.y = xyNew.y;
+      }
+      if (ImPlot::DragLineX("QueryX", &xyDrag.x, true, queryColor)) {
+        xyDrag.x = xyNew.x;
+      }
+      if (ImPlot::DragLineY("QueryY", &xyDrag.y, true, queryColor)) {
+        xyDrag.y = xyNew.y;
+      }
+
+      const auto uv = ImVec2(xyDrag.x, 1.0 - xyDrag.y);
       msg.u0 = uv.x;
       msg.v0 = uv.y;
-
-      msg.hover0 = ImPlot::IsPlotHovered();
 
       const auto i =
           std::max(0, std::min((int)(uv.y * heatmaps.h0), heatmaps.h0 - 1));
@@ -580,14 +713,7 @@ int main(int argc, char *argv[]) {
       msg.iSlice = i;
       msg.jSlice = j;
 
-      ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(0.0, 0.0),
-                        ImPlotPoint(1.0, 1.0));
       ImPlot::EndPlot();
-    }
-
-    if (!msg.hover0) {
-      msg.iSlice = state.iSlice;
-      msg.jSlice = state.jSlice;
     }
 
     ImGui::SameLine();
@@ -595,7 +721,8 @@ int main(int argc, char *argv[]) {
     if (ImPlot::BeginPlot("Image1", nullptr, nullptr, plotSize,
                           ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
                               ImPlotFlags_Crosshairs)) {
-      bool cachedSlice = msg.iSlice == state.iSlice &&
+      bool cachedSlice = msg.idVolume == state.idVolume &&
+                         msg.iSlice == state.iSlice &&
                          msg.jSlice == state.jSlice && state.heat.rows() > 0 &&
                          state.heat.cols() > 0;
 
@@ -626,7 +753,7 @@ int main(int argc, char *argv[]) {
       ImPlot::EndPlot();
     }
 
-    ImPlot::PushColormap(cmap);
+    ImPlot::PushColormap(ImPlotColormap_Viridis);
     ImGui::SameLine();
     ImPlot::ColormapScale("ColormapScale", msg.heatMin, msg.heatMax,
                           ImVec2(cmapWidth, plotSize.y));

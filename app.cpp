@@ -547,7 +547,7 @@ int main(int argc, char *argv[]) {
     }
     ImGui::End();
 
-    const auto cmap = colormapTransparentCopy(ImPlotColormap_Jet, msg.alpha);
+    const auto cmap = colormapTransparentCopy(ImPlotColormap_Viridis, msg.alpha);
 
     const auto workArea = ImVec2(glfwSize.x, glfwSize.y - toolboxHeight);
     const auto neededArea =

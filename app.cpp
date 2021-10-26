@@ -310,7 +310,9 @@ public:
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    const auto mode = image.channels == 3 ? GL_RGB : GL_RGBA;
+    constexpr unsigned int modes[] = {0, GL_DEPTH_COMPONENT, 0, GL_RGB,
+                                      GL_RGBA};
+    const auto mode = modes[image.channels];
     glTexImage2D(GL_TEXTURE_2D, 0, mode, _xres, _yres, 0, mode,
                  GL_UNSIGNED_BYTE, image.data.get());
   }
@@ -535,6 +537,7 @@ struct Message {
   int iSlice = 0, jSlice = 0;
   float alpha = 1.0;
   int idVolume = 0;
+  bool exp = false;
   std::chrono::time_point<std::chrono::system_clock> lastHeatmapSwitch;
 };
 
@@ -627,7 +630,8 @@ int main(int argc, char *argv[]) {
                 .jSlice = state.jSlice,
                 .alpha = state.alpha,
                 .idVolume = state.idVolume,
-                .lastHeatmapSwitch = state.lastHeatmapSwitch};
+                .lastHeatmapSwitch = state.lastHeatmapSwitch,
+                .exp = state.exp};
 
     GlfwFrame glfwFrame(window);
     ImGuiGlfwFrame imguiFrame;
@@ -650,6 +654,7 @@ int main(int argc, char *argv[]) {
 
       ImGui::ListBox("Heatmaps", &msg.idVolume, trace.namesCStr.data(),
                      trace.namesCStr.size());
+      ImGui::Checkbox("exp", &msg.exp);
     }
     ImGui::End();
 
@@ -657,8 +662,13 @@ int main(int argc, char *argv[]) {
       const auto t = std::chrono::system_clock::now();
       const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
           t - state.lastHeatmapSwitch);
+
+      constexpr auto mod = [](auto a, auto b) { return ((a % b) + b) % b; };
+
       if (ms.count() > 300) {
-        msg.idVolume = (msg.idVolume + 1) % trace.volumes.size();
+        const int add =
+            (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) ? -1 : +1;
+        msg.idVolume = mod(msg.idVolume + add, (long)trace.volumes.size());
         msg.lastHeatmapSwitch = t;
       }
     }
@@ -691,7 +701,8 @@ int main(int argc, char *argv[]) {
       ImPlotPoint xyDrag(state.u0, 1.0 - state.v0);
 
       const auto queryColor = ImVec4(255 / 255.0, 99 / 255.0, 71 / 255.0, 1.0);
-      if (ImPlot::DragPoint("Query", &xyDrag.x, &xyDrag.y, true, queryColor, 6)) {
+      if (ImPlot::DragPoint("Query", &xyDrag.x, &xyDrag.y, true, queryColor,
+                            6)) {
         xyDrag.x = xyNew.x;
         xyDrag.y = xyNew.y;
       }
@@ -730,7 +741,8 @@ int main(int argc, char *argv[]) {
         state.heat = heatmaps.slice(msg.iSlice, msg.jSlice);
       }
 
-      const auto heatmap = state.heat;
+      const auto heatmap =
+          msg.exp ? state.heat.array().exp().matrix().eval() : state.heat;
 
       if (args.fix01Scale) {
         msg.heatMin = 0;

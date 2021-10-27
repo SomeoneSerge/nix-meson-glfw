@@ -1,9 +1,0 @@
-[wrap-file]
-directory = clipp-1.2.3
-source_url = https://github.com/muellan/clipp/archive/v1.2.3.zip
-source_filename = clipp-1.2.3.zip
-source_hash = 51f820de9f04866a9a94235258ec51ebfee12f3f3d0ca86a84cf4ddfe50411a3
-patch_url = https://wrapdb.mesonbuild.com/v2/muellan-clipp_1.2.3-1/get_patch
-patch_filename = muellan-clipp-1.2.3-1-wrap.zip
-patch_hash = 12c54c061df5568175da07798fe783a71a71842bbb2e698a42f667e221b24a68
-

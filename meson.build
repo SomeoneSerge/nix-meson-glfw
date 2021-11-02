@@ -18,6 +18,11 @@ imgui_dep = imgui.get_variable('imgui_dep')
 implot = subproject('implot')
 implot_dep = implot.get_variable('implot_dep')
 
+if target_machine.system() == 'darwin'
+  add_project_link_arguments(['-Wl,-lstdc++fs'], language: 'cpp')
+  add_project_link_arguments(['-Wl,-lstdc++fs'], language: 'objcpp')
+endif
+
 executable('nix-meson-glfw', 'app.cpp',
   dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp, msgpack, json, eigen3 ],
   install: true)

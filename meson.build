@@ -24,7 +24,8 @@ imgui_dep = imgui.get_variable('imgui_dep')
 implot = subproject('implot')
 implot_dep = implot.get_variable('implot_dep')
 
-executable('nix-meson-glfw', 'app.cpp',
+executable('nix-meson-glfw', ['app.cpp', 'raii.cpp', 'utils.cpp'],
+  include_directories: ['./include'],
   dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp, msgpack, json, eigen3 ],
   cpp_args: cpp_args,
   objcpp_args: cpp_args,

@@ -1,7 +1,5 @@
 #define GLEW_STATIC
 
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -12,22 +10,21 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <regex>
 #include <string>
 
 #include <OpenImageIO/imageio.h>
 
 #include <clipp.h>
 #include <filesystem>
-#include <nlohmann/json.hpp>
 
 #include <Eigen/Dense>
 
-// FIXME:
-constexpr double WINDOW_MIN_WIDTH = 800;
+#include "viscor/heatmaps-dir.h"
+#include "viscor/raii.h"
+#include "viscor/utils.h"
 
 using namespace Eigen;
-namespace fs = std::filesystem;
+using namespace VisCor;
 
 const char *vtxSource = R"glsl(
     #version 150 core
@@ -50,287 +47,6 @@ const char *fragSource = R"glsl(
     outColor = vec4(1.0, 1.0, 1.0, 1.0);
    }
 )glsl";
-
-class NoCopy {
-public:
-  NoCopy() = default;
-  virtual ~NoCopy() = default;
-  NoCopy(NoCopy &&) = delete; /* let's delete the moves for now as well */
-  NoCopy(const NoCopy &) = delete;
-  NoCopy operator=(const NoCopy &) = delete;
-};
-
-class SafeGlfwCtx : NoCopy {
-public:
-  SafeGlfwCtx() {
-    if (!glfwInit()) {
-      throw std::runtime_error("glfwInit() failed");
-    }
-  };
-  ~SafeGlfwCtx() { glfwTerminate(); }
-};
-
-class SafeGlfwWindow : NoCopy {
-public:
-  SafeGlfwWindow() {
-    const auto width = WINDOW_MIN_WIDTH;
-    const auto height = WINDOW_MIN_WIDTH * (9.0 / 16.0) * .5;
-    glfwWindowHint(GLFW_RESIZABLE, GL_TRUE);
-    /* will make'em params later */
-    const char title[] = "check out nix-meson-glfw";
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-
-    _window = glfwCreateWindow(width, height, title, nullptr, nullptr);
-  }
-
-  ~SafeGlfwWindow() { glfwDestroyWindow(_window); }
-
-  GLFWwindow *window() const { return _window; }
-  void makeContextCurrent() const { glfwMakeContextCurrent(_window); }
-
-private:
-  GLFWwindow *_window;
-};
-
-class SafeGlew : NoCopy {
-public:
-  SafeGlew() {
-    glewExperimental = GL_TRUE;
-    glewInit();
-
-    if (glGenBuffers == nullptr) {
-      throw std::runtime_error("glewInit() failed");
-    }
-  }
-};
-
-class SafeImGui : NoCopy {
-public:
-  SafeImGui(GLFWwindow *window) {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init("#version 150");
-    ImPlot::CreateContext();
-    ImGui::StyleColorsDark();
-  }
-  ~SafeImGui() {
-    ImPlot::DestroyContext();
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-  }
-};
-
-class SafeVBO : NoCopy {
-public:
-  SafeVBO(GLsizeiptr size, const void *data, GLenum target = GL_ARRAY_BUFFER,
-          GLenum usage = GL_STATIC_DRAW) {
-    /* this asks for a slot or a name or whatever it is opengl recognizes */
-    glGenBuffers(1, &_vbo);
-
-    /* this makes vbo the __active__ __array__ buffer... ie the target of the
-     * next glBufferData command */
-    glBindBuffer(target, _vbo);
-
-    /* and this uploads vtxs into that slot */
-    glBufferData(target, size, data, usage);
-  }
-
-  ~SafeVBO() { glDeleteBuffers(1, &_vbo); }
-
-  GLuint vbo() const { return _vbo; }
-
-private:
-  GLuint _vbo;
-};
-
-class SafeVAO : NoCopy {
-public:
-  SafeVAO() {
-    glGenVertexArrays(1, &_vao);
-    bind();
-  }
-
-  ~SafeVAO() { glDeleteVertexArrays(1, &_vao); }
-
-  GLuint vao() const { return _vao; }
-  void bind() { glBindVertexArray(_vao); }
-
-private:
-  GLuint _vao;
-};
-
-class SafeShader : NoCopy {
-public:
-  SafeShader(GLenum shaderType, const char *source) {
-    _shader = glCreateShader(shaderType);
-    glShaderSource(_shader, 1, &source, nullptr);
-    glCompileShader(_shader);
-
-    GLint compileStatus;
-    glGetShaderiv(_shader, GL_COMPILE_STATUS, &compileStatus);
-
-    if (compileStatus != GL_TRUE) {
-      throw std::runtime_error("Shader compilation failed");
-    }
-  }
-  ~SafeShader() { glDeleteShader(_shader); }
-
-  GLuint shader() const { return _shader; }
-
-private:
-  GLuint _shader;
-};
-
-class SafeShaderProgram : NoCopy {
-public:
-  SafeShaderProgram() {
-    /* we could do the linking to shaders, etc, right here
-     * but atm we only care about the order of initialization
-     * (and destruction)
-     */
-    _program = glCreateProgram();
-  }
-
-  ~SafeShaderProgram() { glDeleteProgram(_program); }
-
-  GLuint program() const { return _program; }
-
-private:
-  GLuint _program;
-};
-
-class VtxFragProgram : NoCopy {
-public:
-  VtxFragProgram(const char *vtxShader, const char *fragShader)
-      : _vtxShader(GL_VERTEX_SHADER, vtxShader),
-        _fragShader(GL_FRAGMENT_SHADER, fragShader) {
-    glAttachShader(_program.program(), _vtxShader.shader());
-    glAttachShader(_program.program(), _fragShader.shader());
-  }
-
-  GLuint vtxShader() const { return _vtxShader.shader(); }
-  GLuint fragShader() const { return _fragShader.shader(); }
-  GLuint program() const { return _program.program(); }
-
-protected:
-  SafeShader _vtxShader;
-  SafeShader _fragShader;
-  SafeShaderProgram _program;
-};
-
-class GlfwFrame : NoCopy {
-public:
-  GlfwFrame(GLFWwindow *window) : window(window) {
-    glfwPollEvents();
-
-    glClearColor(.45f, .55f, .6f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-      glfwSetWindowShouldClose(window, GL_TRUE);
-    }
-  }
-  ~GlfwFrame() {
-    int dispWidth, dispHeight;
-    glfwGetFramebufferSize(window, &dispWidth, &dispHeight);
-    glViewport(0, 0, dispWidth, dispHeight);
-    glfwSwapBuffers(window);
-  }
-
-private:
-  GLFWwindow *window;
-};
-
-class ImGuiGlfwFrame : NoCopy {
-public:
-  ImGuiGlfwFrame() {
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-  }
-  ~ImGuiGlfwFrame() {
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-  }
-};
-
-struct Uint8Image {
-  int xres;
-  int yres;
-  int channels;
-  std::unique_ptr<unsigned char[]> data;
-
-  Uint8Image(int xres, int yres, int channels,
-             std::unique_ptr<unsigned char[]> &&data)
-      : xres(xres), yres(yres), channels(channels), data(std::move(data)) {}
-
-  Uint8Image(Uint8Image &&other)
-      : xres(other.xres), yres(other.yres), data(std::move(other.data)) {}
-  Uint8Image(const Uint8Image &other) = delete;
-};
-
-Uint8Image oiioLoadImage(const std::string &filename) {
-  using namespace OIIO;
-
-  auto in = ImageInput::open(filename);
-  if (!in)
-    throw std::runtime_error("Couldn't load the image");
-
-  const ImageSpec &spec = in->spec();
-  int xres = spec.width;
-  int yres = spec.height;
-  int channels = spec.nchannels;
-  std::unique_ptr<unsigned char[]> data =
-      std::make_unique<unsigned char[]>(xres * yres * channels);
-
-  if (!data)
-    throw std::runtime_error("Couldn't allocate memory for image data");
-
-  in->read_image(TypeDesc::UINT8, data.get());
-  in->close(); /* eh... why not raii, I now have to wrap it in try-catch and I
-                  don't want to */
-
-  return Uint8Image(xres, yres, channels, std::move(data));
-}
-
-class SafeGlTexture : NoCopy {
-public:
-  SafeGlTexture(const Uint8Image &image,
-                const unsigned int interpolation = GL_LINEAR)
-      : _texture(0), _xres(image.xres), _yres(image.yres) {
-    glGenTextures(1, &_texture);
-    glBindTexture(GL_TEXTURE_2D, _texture);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, interpolation);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, interpolation);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    constexpr unsigned int modes[] = {0, GL_DEPTH_COMPONENT, 0, GL_RGB,
-                                      GL_RGBA};
-    const auto mode = modes[image.channels];
-    glTexImage2D(GL_TEXTURE_2D, 0, mode, _xres, _yres, 0, mode,
-                 GL_UNSIGNED_BYTE, image.data.get());
-  }
-
-  ~SafeGlTexture() { glDeleteTextures(1, &_texture); }
-
-  GLuint texture() const { return _texture; }
-  void *textureVoidStar() const { return (void *)(intptr_t)_texture; }
-  void bind() { glBindTexture(GL_TEXTURE_2D, _texture); }
-  int xres() const { return _xres; }
-  int yres() const { return _yres; }
-  double aspect() const { return _yres * 1.0 / _xres; }
-
-private:
-  GLuint _texture;
-  int _xres, _yres;
-};
 
 struct AppArgs {
   std::string image0Path;
@@ -367,110 +83,6 @@ struct AppArgs {
       image1Path = fs::path(tracePath) / "image1.tif";
     }
   }
-};
-
-struct LayoutJson {
-  LayoutJson(const fs::path &path) {
-    using json = nlohmann::json;
-    std::ifstream fLayout(path);
-    json j;
-    fLayout >> j;
-
-    shape = (std::vector<int>)j.at("shape");
-    dtype = j.at("dtype");
-  }
-  std::vector<int> shape;
-  std::string dtype;
-};
-
-std::tuple<int, int> indexFromName(const std::string &filename) {
-  static const std::regex regex("(?:0*([0-9]+),)*0*([0-9]+)\\.tif");
-
-  std::vector<int> indices;
-  std::smatch sm;
-  std::regex_match(filename, sm, regex);
-
-  for (auto i = 1; i < sm.size(); ++i) {
-    indices.push_back(std::stoi(sm[i]));
-  }
-
-  if (indices.size() != 2) {
-    std::cerr << "Expected two indices in the name, got " << indices.size()
-              << std::endl;
-    throw std::runtime_error("Not a 4D field");
-  }
-  return std::make_tuple(indices[0], indices[1]);
-}
-
-struct HeatmapsDir {
-  HeatmapsDir(const fs::path &layoutPath) : root(layoutPath.parent_path()) {
-    const auto layout = LayoutJson(layoutPath);
-
-    if (layout.shape.size() != 4)
-      throw std::runtime_error("Not a 4D field");
-    if (layout.dtype != "float32")
-      throw std::runtime_error("only float32 supported");
-
-    h0 = layout.shape[0];
-    w0 = layout.shape[1];
-    h1 = layout.shape[2];
-    w1 = layout.shape[3];
-
-    slices.reserve(h0 * w0);
-    sliceIndices = -Eigen::Array<int, Dynamic, Dynamic, RowMajor>::Ones(h0, w0);
-
-    for (auto &p : fs::directory_iterator(root)) {
-      const auto name = p.path().filename();
-
-      if (name.extension() != ".tif")
-        continue;
-
-      auto [i, j] = indexFromName(name);
-      sliceIndices(i, j) = slices.size();
-      slices.push_back(p.path());
-    }
-  }
-
-  std::optional<fs::path> slicePath(int i, int j) const {
-    return slices[sliceIndices(i, j)];
-  }
-
-  Matrix<float, Dynamic, Dynamic, RowMajor> slice(int i, int j) const {
-    // TODO: cache
-
-    using namespace OIIO;
-
-    const auto path = slicePath(i, j);
-
-    if (!path)
-      return Eigen::Matrix<float, Dynamic, Dynamic, RowMajor>::Constant(
-          h1, w1, std::numeric_limits<float>::quiet_NaN());
-
-    auto in = ImageInput::open(path.value());
-    if (!in) {
-      std::cerr << "Couldn't load" << path.value() << std::endl;
-      throw std::runtime_error("Couldn't load the image");
-    }
-
-    const ImageSpec &spec = in->spec();
-    int xres = spec.width;
-    int yres = spec.height;
-
-    if (xres * yres == 0)
-      throw std::runtime_error("Loaded image was empty");
-
-    Matrix<float, Dynamic, Dynamic, RowMajor> m(yres, xres);
-
-    in->read_image(TypeDesc::FLOAT, m.data());
-    in->close(); /* eh... why not raii, I now have to wrap it in try-catch and I
-                    don't want to */
-    return m;
-  }
-
-  int h0, w0, h1, w1;
-  fs::path root;
-  std::vector<fs::path> slices;
-  Eigen::Array<int, Dynamic, Dynamic, RowMajor> sliceIndices;
 };
 
 ImPlotColormap colormapTransparentResample(ImPlotColormap src, int newRes,
@@ -544,39 +156,6 @@ struct Message {
 
 struct State : public Message {
   Matrix<float, Dynamic, Dynamic, RowMajor> heat;
-};
-
-struct TraceDir {
-  TraceDir(fs::path root) {
-    std::vector<fs::path> heatmaps;
-    for (auto &p : fs::recursive_directory_iterator(root)) {
-      if (p.path().filename() != "layout.json")
-        continue;
-
-      LayoutJson layout(p.path());
-      if (layout.shape.size() != 4)
-        continue;
-
-      heatmaps.push_back(p);
-    }
-
-    names.reserve(heatmaps.size());
-    namesCStr.reserve(heatmaps.size());
-    volumes.reserve(heatmaps.size());
-
-    for (auto &p : heatmaps)
-      volumes.push_back(HeatmapsDir(p));
-
-    for (auto &p : heatmaps)
-      names.push_back(p.parent_path().lexically_relative(root).string());
-
-    for (auto &s : names)
-      namesCStr.push_back(s.c_str());
-  }
-
-  std::vector<HeatmapsDir> volumes;
-  std::vector<std::string> names;
-  std::vector<const char *> namesCStr;
 };
 
 int main(int argc, char *argv[]) {

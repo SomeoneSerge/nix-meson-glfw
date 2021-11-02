@@ -656,7 +656,7 @@ int main(int argc, char *argv[]) {
       msg.alpha = normalizeAlpha(msg.alpha);
 
       ImGui::ListBox("Heatmaps", &msg.idVolume, trace.namesCStr.data(),
-                     trace.namesCStr.size());
+                     trace.namesCStr.size(), 2);
       ImGui::Checkbox("exp", &msg.exp);
     }
     ImGui::End();

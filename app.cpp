@@ -300,13 +300,14 @@ Uint8Image oiioLoadImage(const std::string &filename) {
 
 class SafeGlTexture : NoCopy {
 public:
-  SafeGlTexture(const Uint8Image &image)
+  SafeGlTexture(const Uint8Image &image,
+                const unsigned int interpolation = GL_LINEAR)
       : _texture(0), _xres(image.xres), _yres(image.yres) {
     glGenTextures(1, &_texture);
     glBindTexture(GL_TEXTURE_2D, _texture);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, interpolation);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, interpolation);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
@@ -611,8 +612,8 @@ int main(int argc, char *argv[]) {
   glEnableVertexAttribArray(posAttrib);
 
   // FIXME:
-  SafeGlTexture image0(oiioLoadImage(args.image0Path));
-  SafeGlTexture image1(oiioLoadImage(args.image1Path));
+  SafeGlTexture image0(oiioLoadImage(args.image0Path), GL_NEAREST);
+  SafeGlTexture image1(oiioLoadImage(args.image1Path), GL_NEAREST);
 
   State state;
   state.alpha = args.heatmapAlpha;

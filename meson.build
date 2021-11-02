@@ -2,6 +2,12 @@ project('nix-meson-glfw', 'cpp',
   version: '0.1',
   default_options: ['cpp_std=c++20'])
 
+cpp_args = []
+
+if target_machine.system() == 'darwin'
+  cpp_args += [ '-mmacosx-version-min=10.15' ]
+endif
+
 glfw3 = dependency('glfw3', version: '>=3.0.0')
 glew = dependency('glew', version: '>=2.2.0')
 
@@ -18,11 +24,8 @@ imgui_dep = imgui.get_variable('imgui_dep')
 implot = subproject('implot')
 implot_dep = implot.get_variable('implot_dep')
 
-if target_machine.system() == 'darwin'
-  add_project_link_arguments(['-Wl,-lstdc++fs'], language: 'cpp')
-  add_project_link_arguments(['-Wl,-lstdc++fs'], language: 'objcpp')
-endif
-
 executable('nix-meson-glfw', 'app.cpp',
   dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp, msgpack, json, eigen3 ],
+  cpp_args: cpp_args,
+  objcpp_args: cpp_args,
   install: true)

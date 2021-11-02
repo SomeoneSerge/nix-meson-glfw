@@ -15,7 +15,7 @@ imgui_dep = imgui.get_variable('imgui_dep')
 # Or maybe implot doesn't touch those explicitly?
 # Let's try
 
-implot = library('implot',
+implot = static_library('implot',
     sources,
     include_directories: include_dirs,
     dependencies: [ imgui_dep ]

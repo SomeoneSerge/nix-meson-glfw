@@ -1,7 +1,5 @@
 { lib
 , stdenv
-, libstdcxxClang
-, libcxx
 , tree
 , fetchFromGitHub
 , unzip
@@ -65,7 +63,6 @@ stdenv.mkDerivation {
     nlohmann_json
     eigen
     libglvnd.dev
-    libcxx
   ]
   ++ lib.optionals stdenv.isLinux [ xorg.libX11 ]
   ++ lib.optionals stdenv.isDarwin [ OpenGL Cocoa CoreVideo IOKit ];
@@ -76,7 +73,6 @@ stdenv.mkDerivation {
   mesonAutoFeatures = "auto";
 
   CXXFLAGS = lib.optionalString stdenv.isDarwin "-DTARGET_OS_IOS=0 -DTARGET_OS_TV=0";
-  LDFLAGS = lib.optionalString stdenv.isDarwin "-Wl,-L${libstdcxxClang.dev}/lib -Wl,-L${libcxx}/lib";
 
   # enables -O3 optimization
   mesonBuildType = "release";

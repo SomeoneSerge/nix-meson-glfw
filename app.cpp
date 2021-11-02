@@ -624,14 +624,16 @@ int main(int argc, char *argv[]) {
       ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased | ImPlotFlags_Crosshairs;
 
   while (!glfwWindowShouldClose(window)) {
-    Message msg{.u0 = state.u0,
-                .v0 = state.v0,
-                .iSlice = state.iSlice,
-                .jSlice = state.jSlice,
-                .alpha = state.alpha,
-                .idVolume = state.idVolume,
-                .lastHeatmapSwitch = state.lastHeatmapSwitch,
-                .exp = state.exp};
+    Message msg{
+        .u0 = state.u0,
+        .v0 = state.v0,
+        .iSlice = state.iSlice,
+        .jSlice = state.jSlice,
+        .alpha = state.alpha,
+        .idVolume = state.idVolume,
+        .exp = state.exp,
+        .lastHeatmapSwitch = state.lastHeatmapSwitch,
+    };
 
     GlfwFrame glfwFrame(window);
     ImGuiGlfwFrame imguiFrame;

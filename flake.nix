@@ -9,7 +9,6 @@
       overlay = (final: prev: {
         oiio-pc = final.callPackage ./oiio-pc.nix { };
         viscor = final.callPackage ./release.nix {
-          inherit (final.llvmPackages_9) stdenv;
           inherit (final.darwin.apple_sdk.frameworks) Cocoa OpenGL CoreVideo IOKit;
         };
       });
@@ -18,6 +17,7 @@
     {
       packages = {
         inherit (pkgs) viscor oiio-pc;
+        _pkgs = pkgs;
       };
       defaultPackage = pkgs.viscor;
     });

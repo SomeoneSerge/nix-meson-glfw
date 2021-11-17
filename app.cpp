@@ -1,5 +1,7 @@
 #define GLEW_STATIC
 
+#include <msgpack.hpp> // Must go before OIIO
+
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -19,7 +21,6 @@
 
 #include <Eigen/Dense>
 
-#include "viscor/heatmaps-dir.h"
 #include "viscor/raii.h"
 #include "viscor/utils.h"
 
@@ -51,7 +52,8 @@ const char *fragSource = R"glsl(
 struct AppArgs {
   std::string image0Path;
   std::string image1Path;
-  std::string tracePath;
+  std::string feat0Path;
+  std::string feat1Path;
   bool fix01Scale = false;
   float heatmapAlpha = 0.6;
 
@@ -61,9 +63,10 @@ struct AppArgs {
     bool image0set = false, image1set = false;
 
     auto cli =
-        (value("Path to the heatmap dir (tifs plus layout.json)", tracePath),
-         option("--image0").set(image0set) & opt_value("path", image0Path),
-         option("--image1").set(image1set) & opt_value("path", image1Path),
+        (value("Path to the first featuremap", feat0Path),
+         value("Path to the second featuremap", feat1Path),
+         option("--image0").set(image0set) & value("path", image0Path),
+         option("--image1").set(image1set) & value("path", image1Path),
          option("-01", "--fix-01-scale")
              .set(fix01Scale)
              .doc("Fix the heatmap scale to [0..1]. Otherwise, adjust to "
@@ -77,10 +80,10 @@ struct AppArgs {
       std::exit(1);
     }
     if (!image0set) {
-      image0Path = fs::path(tracePath) / "image0.tif";
+      // image0Path = fs::path(tracePath) / "image0.tif";
     }
     if (!image1set) {
-      image1Path = fs::path(tracePath) / "image1.tif";
+      // image1Path = fs::path(tracePath) / "image1.tif";
     }
   }
 };
@@ -144,25 +147,68 @@ ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
   return cmap;
 }
 
+struct DescriptorField {
+  std::tuple<int, int, int> shape;
+  Eigen::Array<float, Dynamic, Dynamic, Eigen::RowMajor> data;
+
+  DescriptorField(const DescriptorField &) = delete;
+  DescriptorField() = default;
+  DescriptorField(DescriptorField &&) = default;
+
+  Eigen::Array<float, 1, Dynamic> operator()(const int i, const int j) const {
+    return data.row(i * std::get<1>(shape) + j);
+  }
+
+  int h() const { return std::get<0>(shape); }
+  int w() const { return std::get<1>(shape); }
+  int c() const { return std::get<2>(shape); }
+};
+
+DescriptorField loadMsgpackField(const fs::path &msgpackPath) {
+  std::ifstream ifs(msgpackPath);
+  std::string buffer((std::istreambuf_iterator<char>(ifs)),
+                     std::istreambuf_iterator<char>());
+  msgpack::unpacked upd;
+  size_t offset = 0;
+  std::vector<int> shape =
+      msgpack::unpack(buffer.data(), buffer.size(), offset).get().convert();
+  std::vector<float> data =
+      msgpack::unpack(buffer.data(), buffer.size(), offset).get().convert();
+
+  // std::vector<int> shape;
+  // std::vector<float> data;
+
+  if (shape.size() != 3) {
+    throw std::runtime_error("desciptor field must have 3 axes");
+  }
+
+  if (shape[2] != 256) {
+    std::cerr << "Expected 256 channels, got " << shape[2] << std::endl;
+  }
+
+  DescriptorField f;
+  f.shape = {shape[0], shape[1], shape[2]};
+  f.data = Eigen::Map<Eigen::Array<float, Dynamic, Dynamic, RowMajor>>(
+      data.data(), shape[0] * shape[1], shape[2]);
+  return f;
+}
+
 struct Message {
   double u0 = .5, v0 = .5; // cursor position in plot 0
   double heatMin = 0, heatMax = 1;
   int iSlice = 0, jSlice = 0;
   float alpha = 1.0;
-  int idVolume = 0;
   bool exp = false;
   std::chrono::time_point<std::chrono::system_clock> lastHeatmapSwitch;
 };
 
 struct State : public Message {
-  Matrix<float, Dynamic, Dynamic, RowMajor> heat;
+  Array<float, Dynamic, Dynamic, RowMajor> heat;
 };
 
 int main(int argc, char *argv[]) {
 
   AppArgs args(argc, argv);
-
-  TraceDir trace(args.tracePath);
 
   SafeGlfwCtx ctx;
   SafeGlfwWindow safeWindow;
@@ -194,8 +240,14 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path), GL_NEAREST);
   SafeGlTexture image1(oiioLoadImage(args.image1Path), GL_NEAREST);
 
+  const auto desc0 = loadMsgpackField(args.feat0Path);
+  const auto desc1 = loadMsgpackField(args.feat1Path);
+
+  Array<float, Dynamic, Dynamic, RowMajor> heatmap;
+
   State state;
   state.alpha = args.heatmapAlpha;
+  state.heat.resize(desc1.h(), desc1.w());
 
   constexpr auto defaultWindowOptions = ImGuiWindowFlags_NoDecoration |
                                         ImGuiWindowFlags_NoBackground |
@@ -210,7 +262,6 @@ int main(int argc, char *argv[]) {
         .iSlice = state.iSlice,
         .jSlice = state.jSlice,
         .alpha = state.alpha,
-        .idVolume = state.idVolume,
         .exp = state.exp,
         .lastHeatmapSwitch = state.lastHeatmapSwitch,
     };
@@ -234,28 +285,10 @@ int main(int argc, char *argv[]) {
       ImGui::SliderFloat("Heatmap Alpha", &msg.alpha, 0.0, 1.0);
       msg.alpha = normalizeAlpha(msg.alpha);
 
-      ImGui::ListBox("Heatmaps", &msg.idVolume, trace.namesCStr.data(),
-                     trace.namesCStr.size(), 2);
       ImGui::Checkbox("exp", &msg.exp);
     }
     ImGui::End();
 
-    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-      const auto t = std::chrono::system_clock::now();
-      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-          t - state.lastHeatmapSwitch);
-
-      constexpr auto mod = [](auto a, auto b) { return ((a % b) + b) % b; };
-
-      if (ms.count() > 300) {
-        const int add =
-            (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) ? -1 : +1;
-        msg.idVolume = mod(msg.idVolume + add, (long)trace.volumes.size());
-        msg.lastHeatmapSwitch = t;
-      }
-    }
-
-    auto &heatmaps = trace.volumes[msg.idVolume];
     const auto cmap =
         colormapTransparentCopy(ImPlotColormap_Viridis, msg.alpha);
 
@@ -300,9 +333,9 @@ int main(int argc, char *argv[]) {
       msg.v0 = uv.y;
 
       const auto i =
-          std::max(0, std::min((int)(uv.y * heatmaps.h0), heatmaps.h0 - 1));
+          std::max(0, std::min((int)(uv.y * desc0.h()), desc0.h() - 1));
       const auto j =
-          std::max(0, std::min((int)(uv.x * heatmaps.w0), heatmaps.w0 - 1));
+          std::max(0, std::min((int)(uv.x * desc0.w()), desc0.w() - 1));
       msg.iSlice = i;
       msg.jSlice = j;
 
@@ -314,17 +347,30 @@ int main(int argc, char *argv[]) {
     if (ImPlot::BeginPlot("Image1", nullptr, nullptr, plotSize,
                           ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
                               ImPlotFlags_Crosshairs)) {
-      bool cachedSlice = msg.idVolume == state.idVolume &&
-                         msg.iSlice == state.iSlice &&
+      bool cachedSlice = msg.iSlice == state.iSlice &&
                          msg.jSlice == state.jSlice && state.heat.rows() > 0 &&
-                         state.heat.cols() > 0;
+                         state.heat.cols() > 0 && msg.exp == state.exp;
 
       if (!cachedSlice) {
-        state.heat = heatmaps.slice(msg.iSlice, msg.jSlice);
+        const auto query = desc0(msg.iSlice, msg.jSlice);
+        const auto innerProducts =
+            (desc1.data.rowwise() * query / std::sqrt(desc1.c()))
+                .rowwise()
+                .sum()
+                .eval();
+        Map<Array<float, Dynamic, 1>>(state.heat.data(), desc1.h() * desc1.w())
+            << innerProducts;
       }
 
-      const auto heatmap =
-          msg.exp ? state.heat.array().exp().matrix().eval() : state.heat;
+      if (msg.exp) {
+        // ImPlot color interpolation crashes whenever it sees NaNs or
+        // infinities
+        const auto max = 1e30; // std::numeric_limits<float>::quiet_NaN();
+        const auto eH = state.heat.exp();
+        heatmap = (eH.isFinite() && (eH < 1e30)).select(eH, max);
+      } else {
+        heatmap = state.heat;
+      }
 
       if (args.fix01Scale) {
         msg.heatMin = 0;
@@ -338,6 +384,7 @@ int main(int argc, char *argv[]) {
                         ImPlotPoint(1.0, 1.0));
 
       ImPlot::PushColormap(cmap);
+
       ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
                           heatmap.rows(), heatmap.cols(), msg.heatMin,
                           msg.heatMax, nullptr);

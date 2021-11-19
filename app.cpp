@@ -186,8 +186,10 @@ DescriptorField loadMsgpackField(const fs::path &msgpackPath,
 
   DescriptorField f;
   f.shape = {shape[0], shape[1], shape[2]};
-  f.data = torch::from_blob(data.data(), {shape[0], shape[1], shape[2]},
-                            torch::TensorOptions().device(device));
+  f.data =
+      torch::from_blob(data.data(), {shape[0], shape[1], shape[2]},
+                       torch::TensorOptions().device(device).dtype(torch::kF32))
+          .clone();
   f.data = f.data.to(device);
   return f;
 }
@@ -203,6 +205,7 @@ struct Message {
 
 struct State : public Message {
   torch::Tensor heat;
+  torch::Tensor heatOnDevice;
 };
 
 int main(int argc, char *argv[]) {
@@ -241,9 +244,7 @@ int main(int argc, char *argv[]) {
 
   at::NoGradGuard
       inferenceModeGuard; // TODO: InferenceMode guard in a newer pytorch
-  // const auto device = torch::cuda::is_available() ? torch::kCUDA :
-  // torch::kCPU;
-  const auto device = torch::kCPU;
+  const auto device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
 
   const auto desc0 = loadMsgpackField(args.feat0Path, device);
   std::cerr << "Finished loading " << args.feat0Path << std::endl;
@@ -251,13 +252,13 @@ int main(int argc, char *argv[]) {
   const auto desc1 = loadMsgpackField(args.feat1Path, device);
   std::cerr << "Finished loading " << args.feat1Path << std::endl;
 
-  torch::Tensor heatmap = torch::zeros(
-      {desc1.h(), desc1.w()},
-      torch::TensorOptions().device(torch::kCPU).dtype(torch::kFloat32));
-
-  State state{.heat = torch::zeros(
-                  {desc1.h(), desc1.w()},
-                  torch::TensorOptions().device(device).dtype(torch::kF32))};
+  State state{
+      .heat = torch::empty(
+          {desc1.h(), desc1.w()},
+          torch::TensorOptions().device(torch::kCPU).dtype(torch::kFloat32)),
+      .heatOnDevice = torch::zeros(
+          {desc1.h(), desc1.w()},
+          torch::TensorOptions().device(torch::kCPU).dtype(torch::kF32))};
   state.alpha = args.heatmapAlpha;
 
   std::cerr << "Finished initialization of State" << std::endl;
@@ -367,26 +368,26 @@ int main(int argc, char *argv[]) {
       if (!cachedSlice) {
         const auto stdvar = std::sqrt(desc1.c());
         const auto query =
-            desc0(msg.iSlice, msg.jSlice).reshape({1, 1, desc0.c()});
-        state.heat = desc1.data.mul(query).div(stdvar).sum(-1);
+            desc0(msg.iSlice, msg.jSlice).reshape({1, 1, desc0.c()}) / stdvar;
+        state.heatOnDevice = desc1.data.div(stdvar).mul(query).sum(-1);
         if (msg.exp) {
-          state.heat.exp_();
+          state.heatOnDevice.exp_();
         }
         // ImPlot color interpolation crashes whenever it sees NaNs or
         // infinities
         const auto max = 1e30; // std::numeric_limits<float>::quiet_NaN();
-        state.heat.nan_to_num_(max, max, -max);
-        state.heat.clip_(-max, max);
+        state.heatOnDevice.nan_to_num_(max, max, -max);
+        state.heatOnDevice.clip_(-max, max);
 
-        heatmap.copy_(state.heat.to(torch::kCPU));
+        state.heat.copy_(state.heatOnDevice.to(torch::kCPU));
       }
 
       if (args.fix01Scale) {
         msg.heatMin = 0;
         msg.heatMax = 1;
       } else {
-        msg.heatMin = heatmap.min().item<double>();
-        msg.heatMax = heatmap.max().item<double>();
+        msg.heatMin = state.heatOnDevice.min().item<double>();
+        msg.heatMax = state.heatOnDevice.max().item<double>();
       }
 
       ImPlot::PlotImage("im1", image1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
@@ -395,8 +396,9 @@ int main(int argc, char *argv[]) {
       ImPlot::PushColormap(cmap);
 
       ImPlot::PlotHeatmap("Correspondence volume slice",
-                          (float *)heatmap.data_ptr(), heatmap.size(0),
-                          heatmap.size(1), msg.heatMin, msg.heatMax, nullptr);
+                          (float *)state.heat.data_ptr(), state.heat.size(0),
+                          state.heat.size(1), msg.heatMin, msg.heatMax,
+                          nullptr);
 
       ImPlot::PopColormap();
 

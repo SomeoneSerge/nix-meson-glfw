@@ -188,7 +188,7 @@ DescriptorField loadMsgpackField(const fs::path &msgpackPath,
   f.shape = {shape[0], shape[1], shape[2]};
   f.data =
       torch::from_blob(data.data(), {shape[0], shape[1], shape[2]},
-                       torch::TensorOptions().device(device).dtype(torch::kF32))
+                       torch::TensorOptions().dtype(torch::kF32))
           .clone();
   f.data = f.data.to(device);
   return f;
@@ -245,6 +245,8 @@ int main(int argc, char *argv[]) {
   at::NoGradGuard
       inferenceModeGuard; // TODO: InferenceMode guard in a newer pytorch
   const auto device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
+
+  std::cerr << "Using " << device << std::endl;
 
   const auto desc0 = loadMsgpackField(args.feat0Path, device);
   std::cerr << "Finished loading " << args.feat0Path << std::endl;

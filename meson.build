@@ -3,6 +3,7 @@ project('nix-meson-glfw', 'cpp',
   default_options: ['cpp_std=c++20'])
 
 cpp_args = []
+link_args = []
 
 if target_machine.system() == 'darwin'
   cpp_args += [ '-mmacosx-version-min=10.15' ]
@@ -33,7 +34,24 @@ torch_cuda_modules = [
   'torch_cuda',
   ]
 
-torch = dependency('Torch', method: 'cmake', modules: torch_modules)
+# libtorch is a wrapper that selects cpu or cuda at runtime?
+link_args += ['-Wl,--no-as-needed,-ltorch', '-Wl,--as-needed']
+
+torch_cuda = dependency('Torch',
+  method: 'cmake',
+  modules: torch_modules + torch_cuda_modules,
+  required: false,
+  )
+
+if torch_cuda.found()
+  torch = torch_cuda
+else
+  message('Falling back to torch_cpu')
+  torch = dependency('Torch',
+    method: 'cmake',
+    modules: torch_modules,
+    required: true)
+endif
 
 imgui = subproject('imgui')
 imgui_dep = imgui.get_variable('imgui_dep')
@@ -46,4 +64,5 @@ executable('nix-meson-glfw', ['app.cpp', 'raii.cpp', 'utils.cpp'],
   dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp, msgpack, json, torch ],
   cpp_args: cpp_args,
   objcpp_args: cpp_args,
+  link_args: link_args,
   install: true)

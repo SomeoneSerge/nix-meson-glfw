@@ -16,7 +16,7 @@
           };
         };
         viscor-cuda = final.viscor.override {
-          libtorch = final.libtorch-bin;
+          libtorch = final.libtorch-bin.override { cudaSupport = true; };
           cudaSupport = true;
         };
       });
@@ -37,6 +37,6 @@
         _pkgs = pkgs;
         _pkgsUnfree = pkgsUnfree;
       };
-      defaultPackage = pkgsUnfree.viscor;
+      defaultPackage = pkgs.viscor;
     });
 }

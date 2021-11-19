@@ -10,9 +10,12 @@
         oiio-pc = final.callPackage ./oiio-pc.nix { };
         viscor = final.callPackage ./release.nix {
           inherit (final.darwin.apple_sdk.frameworks) Cocoa OpenGL CoreVideo IOKit;
-          libtorch = final.symlinkJoin {
+          # pytorch is broken on Darwin
+          libtorch = if final.stdenv.isDarwin then final.libtorch-bin else
+          let p = final.python3Packages.pytorch; in
+          final.symlinkJoin {
             name = "libtorch-unsplit";
-            paths = let p = final.python3Packages.pytorch; in [ p.lib p.dev ];
+            paths = [ p.lib p.dev ];
           };
         };
         viscor-cuda = final.viscor.override {
@@ -26,6 +29,7 @@
         config.allowUnfreePredicate = pkg: builtins.elem (pkgs.lib.getName pkg) [
           "libtorch"
           "cudatoolkit"
+          "libtorch-bin"
         ];
         overlays = [ overlay ];
       };
@@ -37,6 +41,6 @@
         _pkgs = pkgs;
         _pkgsUnfree = pkgsUnfree;
       };
-      defaultPackage = pkgs.viscor;
+      defaultPackage = pkgsUnfree.viscor;
     });
 }

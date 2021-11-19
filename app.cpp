@@ -19,12 +19,12 @@
 #include <clipp.h>
 #include <filesystem>
 
-#include <Eigen/Dense>
+#include <ATen/ATen.h> // c10::InferenceMode
+#include <torch/torch.h>
 
 #include "viscor/raii.h"
 #include "viscor/utils.h"
 
-using namespace Eigen;
 using namespace VisCor;
 
 const char *vtxSource = R"glsl(
@@ -149,14 +149,14 @@ ImPlotColormap colormapTransparentCopy(ImPlotColormap src, double alpha) {
 
 struct DescriptorField {
   std::tuple<int, int, int> shape;
-  Eigen::Array<float, Dynamic, Dynamic, Eigen::RowMajor> data;
+  torch::Tensor data;
 
   DescriptorField(const DescriptorField &) = delete;
   DescriptorField() = default;
   DescriptorField(DescriptorField &&) = default;
 
-  Eigen::Array<float, 1, Dynamic> operator()(const int i, const int j) const {
-    return data.row(i * std::get<1>(shape) + j);
+  torch::Tensor operator()(const int i, const int j) const {
+    return data.index({i, j});
   }
 
   int h() const { return std::get<0>(shape); }
@@ -164,7 +164,8 @@ struct DescriptorField {
   int c() const { return std::get<2>(shape); }
 };
 
-DescriptorField loadMsgpackField(const fs::path &msgpackPath) {
+DescriptorField loadMsgpackField(const fs::path &msgpackPath,
+                                 const torch::Device &device) {
   std::ifstream ifs(msgpackPath);
   std::string buffer((std::istreambuf_iterator<char>(ifs)),
                      std::istreambuf_iterator<char>());
@@ -174,9 +175,6 @@ DescriptorField loadMsgpackField(const fs::path &msgpackPath) {
       msgpack::unpack(buffer.data(), buffer.size(), offset).get().convert();
   std::vector<float> data =
       msgpack::unpack(buffer.data(), buffer.size(), offset).get().convert();
-
-  // std::vector<int> shape;
-  // std::vector<float> data;
 
   if (shape.size() != 3) {
     throw std::runtime_error("desciptor field must have 3 axes");
@@ -188,8 +186,9 @@ DescriptorField loadMsgpackField(const fs::path &msgpackPath) {
 
   DescriptorField f;
   f.shape = {shape[0], shape[1], shape[2]};
-  f.data = Eigen::Map<Eigen::Array<float, Dynamic, Dynamic, RowMajor>>(
-      data.data(), shape[0] * shape[1], shape[2]);
+  f.data = torch::from_blob(data.data(), {shape[0], shape[1], shape[2]},
+                            torch::TensorOptions().device(device));
+  f.data = f.data.to(device);
   return f;
 }
 
@@ -203,7 +202,7 @@ struct Message {
 };
 
 struct State : public Message {
-  Array<float, Dynamic, Dynamic, RowMajor> heat;
+  torch::Tensor heat;
 };
 
 int main(int argc, char *argv[]) {
@@ -240,14 +239,28 @@ int main(int argc, char *argv[]) {
   SafeGlTexture image0(oiioLoadImage(args.image0Path), GL_NEAREST);
   SafeGlTexture image1(oiioLoadImage(args.image1Path), GL_NEAREST);
 
-  const auto desc0 = loadMsgpackField(args.feat0Path);
-  const auto desc1 = loadMsgpackField(args.feat1Path);
+  at::NoGradGuard
+      inferenceModeGuard; // TODO: InferenceMode guard in a newer pytorch
+  // const auto device = torch::cuda::is_available() ? torch::kCUDA :
+  // torch::kCPU;
+  const auto device = torch::kCPU;
 
-  Array<float, Dynamic, Dynamic, RowMajor> heatmap;
+  const auto desc0 = loadMsgpackField(args.feat0Path, device);
+  std::cerr << "Finished loading " << args.feat0Path << std::endl;
 
-  State state;
+  const auto desc1 = loadMsgpackField(args.feat1Path, device);
+  std::cerr << "Finished loading " << args.feat1Path << std::endl;
+
+  torch::Tensor heatmap = torch::zeros(
+      {desc1.h(), desc1.w()},
+      torch::TensorOptions().device(torch::kCPU).dtype(torch::kFloat32));
+
+  State state{.heat = torch::zeros(
+                  {desc1.h(), desc1.w()},
+                  torch::TensorOptions().device(device).dtype(torch::kF32))};
   state.alpha = args.heatmapAlpha;
-  state.heat.resize(desc1.h(), desc1.w());
+
+  std::cerr << "Finished initialization of State" << std::endl;
 
   constexpr auto defaultWindowOptions = ImGuiWindowFlags_NoDecoration |
                                         ImGuiWindowFlags_NoBackground |
@@ -347,37 +360,33 @@ int main(int argc, char *argv[]) {
     if (ImPlot::BeginPlot("Image1", nullptr, nullptr, plotSize,
                           ImPlotFlags_NoLegend | ImPlotFlags_AntiAliased |
                               ImPlotFlags_Crosshairs)) {
-      bool cachedSlice = msg.iSlice == state.iSlice &&
-                         msg.jSlice == state.jSlice && state.heat.rows() > 0 &&
-                         state.heat.cols() > 0 && msg.exp == state.exp;
+      bool cachedSlice = msg.exp == state.exp && msg.iSlice == state.iSlice &&
+                         msg.jSlice == state.jSlice && state.heat.size(0) > 0 &&
+                         state.heat.size(1) > 0;
 
       if (!cachedSlice) {
-        const auto query = desc0(msg.iSlice, msg.jSlice);
-        const auto innerProducts =
-            (desc1.data.rowwise() * query / std::sqrt(desc1.c()))
-                .rowwise()
-                .sum()
-                .eval();
-        Map<Array<float, Dynamic, 1>>(state.heat.data(), desc1.h() * desc1.w())
-            << innerProducts;
-      }
-
-      if (msg.exp) {
+        const auto stdvar = std::sqrt(desc1.c());
+        const auto query =
+            desc0(msg.iSlice, msg.jSlice).reshape({1, 1, desc0.c()});
+        state.heat = desc1.data.mul(query).div(stdvar).sum(-1);
+        if (msg.exp) {
+          state.heat.exp_();
+        }
         // ImPlot color interpolation crashes whenever it sees NaNs or
         // infinities
         const auto max = 1e30; // std::numeric_limits<float>::quiet_NaN();
-        const auto eH = state.heat.exp();
-        heatmap = (eH.isFinite() && (eH < 1e30)).select(eH, max);
-      } else {
-        heatmap = state.heat;
+        state.heat.nan_to_num_(max, max, -max);
+        state.heat.clip_(-max, max);
+
+        heatmap.copy_(state.heat.to(torch::kCPU));
       }
 
       if (args.fix01Scale) {
         msg.heatMin = 0;
         msg.heatMax = 1;
       } else {
-        msg.heatMin = heatmap.minCoeff();
-        msg.heatMax = heatmap.maxCoeff();
+        msg.heatMin = heatmap.min().item<double>();
+        msg.heatMax = heatmap.max().item<double>();
       }
 
       ImPlot::PlotImage("im1", image1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
@@ -385,9 +394,9 @@ int main(int argc, char *argv[]) {
 
       ImPlot::PushColormap(cmap);
 
-      ImPlot::PlotHeatmap("Correspondence volume slice", heatmap.data(),
-                          heatmap.rows(), heatmap.cols(), msg.heatMin,
-                          msg.heatMax, nullptr);
+      ImPlot::PlotHeatmap("Correspondence volume slice",
+                          (float *)heatmap.data_ptr(), heatmap.size(0),
+                          heatmap.size(1), msg.heatMin, msg.heatMax, nullptr);
 
       ImPlot::PopColormap();
 

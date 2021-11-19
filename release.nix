@@ -5,6 +5,7 @@
 , unzip
 , pkgconfig
 , meson
+, cmake
 , ninja
 , glfw3
 , glew
@@ -14,12 +15,15 @@
 , msgpack
 , clipp
 , nlohmann_json
-, eigen
 , libglvnd
 , OpenGL
 , Cocoa
 , CoreVideo
 , IOKit
+, libtorch
+, cudatoolkit
+, cudnn
+, cudaSupport ? false
 }:
 
 let
@@ -52,7 +56,7 @@ stdenv.mkDerivation {
   pname = "nix-meson-glfw";
   version = "0.0.1";
   src = ./.;
-  nativeBuildInputs = [ ninja meson pkgconfig ];
+  nativeBuildInputs = [ ninja meson cmake pkgconfig ];
   buildInputs = [
     glfw3
     glew.dev
@@ -61,9 +65,10 @@ stdenv.mkDerivation {
     msgpack
     clipp
     nlohmann_json
-    eigen
     libglvnd.dev
+    libtorch
   ]
+  ++ lib.optionals cudaSupport [ cudatoolkit cudnn ]
   ++ lib.optionals stdenv.isLinux [ xorg.libX11 ]
   ++ lib.optionals stdenv.isDarwin [ OpenGL Cocoa CoreVideo IOKit ];
 

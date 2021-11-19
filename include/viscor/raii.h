@@ -1,7 +1,6 @@
 #ifndef _VISCOR_RAII_H
 #define _VISCOR_RAII_H
 
-#include <Eigen/Dense>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <OpenImageIO/imageio.h>

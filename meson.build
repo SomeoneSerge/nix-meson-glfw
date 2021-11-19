@@ -16,7 +16,24 @@ oiio = dependency('openimageio2')
 openexr = dependency('OpenEXR')
 msgpack = dependency('msgpack')
 clipp = dependency('clipp')
-eigen3 = dependency('eigen3')
+
+# torch_modules = [
+#   'Threads::Threads', 'protobuf::libprotobuf', 'caffe2::cuda',
+#   'torch::cudart', 'torch::nvtoolsext', 'caffe2::cudnn', 'caffe2::curand',
+#   'caffe2::cufft', 'caffe2::cublas', 'caffe2::nvrtc', 'caffe2::mkl',
+#   'caffe2::mkldnn', 'c10_cuda', 'c10', 'torch_cpu',
+#   'torch_cuda', 'torch']
+torch_modules = [
+  'torch',
+  'c10',
+  'torch_cpu',
+  'Threads::Threads',
+  ]
+torch_cuda_modules = [
+  'torch_cuda',
+  ]
+
+torch = dependency('Torch', method: 'cmake', modules: torch_modules)
 
 imgui = subproject('imgui')
 imgui_dep = imgui.get_variable('imgui_dep')
@@ -26,7 +43,7 @@ implot_dep = implot.get_variable('implot_dep')
 
 executable('nix-meson-glfw', ['app.cpp', 'raii.cpp', 'utils.cpp'],
   include_directories: ['./include'],
-  dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp, msgpack, json, eigen3 ],
+  dependencies: [ glfw3, glew, imgui_dep, implot_dep, oiio, openexr, clipp, msgpack, json, torch ],
   cpp_args: cpp_args,
   objcpp_args: cpp_args,
   install: true)

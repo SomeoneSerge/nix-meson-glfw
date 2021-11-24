@@ -66,3 +66,5 @@ executable('nix-meson-glfw', ['app.cpp', 'raii.cpp', 'utils.cpp'],
   objcpp_args: cpp_args,
   link_args: link_args,
   install: true)
+
+executable('exrinfo', ['exrinfo.cpp'], dependencies: [oiio, openexr, clipp])

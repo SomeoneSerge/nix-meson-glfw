@@ -156,7 +156,8 @@ struct DescriptorField {
   DescriptorField(DescriptorField &&) = default;
 
   torch::Tensor operator()(const int i, const int j) const {
-    return data.index({i, j});
+    using namespace torch::indexing;
+    return data.index({Slice(), i, j});
   }
 
   int h() const { return std::get<0>(shape); }
@@ -164,33 +165,43 @@ struct DescriptorField {
   int c() const { return std::get<2>(shape); }
 };
 
-DescriptorField loadMsgpackField(const fs::path &msgpackPath,
-                                 const torch::Device &device) {
-  std::ifstream ifs(msgpackPath);
-  std::string buffer((std::istreambuf_iterator<char>(ifs)),
-                     std::istreambuf_iterator<char>());
-  msgpack::unpacked upd;
-  size_t offset = 0;
-  std::vector<int> shape =
-      msgpack::unpack(buffer.data(), buffer.size(), offset).get().convert();
-  std::vector<float> data =
-      msgpack::unpack(buffer.data(), buffer.size(), offset).get().convert();
+// FIXME: rm shitcode
+DescriptorField loadExrField(const fs::path &path,
+                             const torch::Device &device) {
+  using namespace OIIO;
+  std::unique_ptr<ImageInput> in = ImageInput::open(path);
+  const ImageSpec &spec = in->spec();
 
-  if (shape.size() != 3) {
-    throw std::runtime_error("desciptor field must have 3 axes");
+  std::vector<std::string> descChannels;
+  for (const auto &c : spec.channelnames) {
+    if (!c.starts_with("superglue."))
+      continue;
+    descChannels.push_back(c);
   }
 
-  if (shape[2] != 256) {
-    std::cerr << "Expected 256 channels, got " << shape[2] << std::endl;
+  const auto nChannels = descChannels.size();
+  const auto shape = std::make_tuple(spec.height, spec.width, nChannels);
+
+  if (nChannels != 256) {
+    std::cerr << "Expected 256 channels, got " << std::get<2>(shape)
+              << std::endl;
   }
 
   DescriptorField f;
-  f.shape = {shape[0], shape[1], shape[2]};
-  f.data =
-      torch::from_blob(data.data(), {shape[0], shape[1], shape[2]},
-                       torch::TensorOptions().dtype(torch::kF32))
-          .clone();
-  f.data = f.data.to(device);
+  f.shape = shape;
+
+  f.data = torch::empty({(long)nChannels, spec.height, spec.width},
+                        torch::TensorOptions().dtype(torch::kF32));
+
+  long offset = 0;
+  for (const auto &c : descChannels) {
+    const auto channelIdx = spec.channelindex(c);
+    in->read_image(channelIdx, channelIdx + 1, TypeDesc::FLOAT,
+                   f.data.data_ptr<float>() + offset);
+    offset += spec.width * spec.height;
+  }
+
+  f.data = f.data.clone().to(device);
   return f;
 }
 
@@ -248,10 +259,10 @@ int main(int argc, char *argv[]) {
 
   std::cerr << "Using " << device << std::endl;
 
-  const auto desc0 = loadMsgpackField(args.feat0Path, device);
+  const auto desc0 = loadExrField(args.feat0Path, device);
   std::cerr << "Finished loading " << args.feat0Path << std::endl;
 
-  const auto desc1 = loadMsgpackField(args.feat1Path, device);
+  const auto desc1 = loadExrField(args.feat1Path, device);
   std::cerr << "Finished loading " << args.feat1Path << std::endl;
 
   State state{
@@ -370,8 +381,8 @@ int main(int argc, char *argv[]) {
       if (!cachedSlice) {
         const auto stdvar = std::sqrt(desc1.c());
         const auto query =
-            desc0(msg.iSlice, msg.jSlice).reshape({1, 1, desc0.c()}) / stdvar;
-        state.heatOnDevice = desc1.data.div(stdvar).mul(query).sum(-1);
+            desc0(msg.iSlice, msg.jSlice).reshape({desc0.c(), 1, 1}) / stdvar;
+        state.heatOnDevice = desc1.data.div(stdvar).mul(query).sum(0);
         if (msg.exp) {
           state.heatOnDevice.exp_();
         }

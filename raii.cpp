@@ -137,4 +137,8 @@ VisCor::SafeGlTexture::SafeGlTexture(const Uint8Image &image,
   glTexImage2D(GL_TEXTURE_2D, 0, mode, _xres, _yres, 0, mode, GL_UNSIGNED_BYTE,
                image.data.get());
 }
-VisCor::SafeGlTexture::~SafeGlTexture() { glDeleteTextures(1, &_texture); }
+VisCor::SafeGlTexture::~SafeGlTexture() {
+  if (_texture != GL_INVALID_VALUE) {
+    glDeleteTextures(1, &_texture);
+  }
+}

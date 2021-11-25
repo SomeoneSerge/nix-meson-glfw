@@ -9,6 +9,8 @@
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
 
+#include "viscor/utils.h"
+
 namespace VisCor {
 // FIXME:
 constexpr double WINDOW_MIN_WIDTH = 800;
@@ -138,25 +140,15 @@ public:
   ~ImGuiGlfwFrame();
 };
 
-struct Uint8Image {
-  int xres;
-  int yres;
-  int channels;
-  std::unique_ptr<unsigned char[]> data;
-
-  Uint8Image(int xres, int yres, int channels,
-             std::unique_ptr<unsigned char[]> &&data)
-      : xres(xres), yres(yres), channels(channels), data(std::move(data)) {}
-
-  Uint8Image(Uint8Image &&other)
-      : xres(other.xres), yres(other.yres), data(std::move(other.data)) {}
-  Uint8Image(const Uint8Image &other) = delete;
-};
-
 class SafeGlTexture : NoCopy {
 public:
   SafeGlTexture(const Uint8Image &image,
                 const unsigned int interpolation = GL_LINEAR);
+
+  SafeGlTexture(SafeGlTexture &&other)
+      : _texture(other._texture), _xres(other._xres), _yres(other._yres) {
+    other._texture = GL_INVALID_VALUE;
+  }
 
   ~SafeGlTexture();
 

@@ -183,8 +183,11 @@ DescriptorField loadExrField(const fs::path &path,
   const auto shape = std::make_tuple(spec.height, spec.width, nChannels);
 
   if (nChannels != 256) {
-    std::cerr << "Expected 256 channels, got " << std::get<2>(shape)
-              << std::endl;
+    std::cerr << "Expected 256 channels, got " << std::get<2>(shape) << "x"
+              << std::get<0>(shape) << "x" << std::get<1>(shape) << std::endl;
+  }
+  if (nChannels < 1) {
+    throw std::runtime_error("Input has 0 channels");
   }
 
   DescriptorField f;

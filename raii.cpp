@@ -32,7 +32,7 @@ VisCor::SafeGlew::SafeGlew() {
   glewInit();
 
   if (glGenBuffers == nullptr) {
-    throw std::runtime_error("glewInit() failed");
+    throw std::runtime_error("glewInit() failed: glGenBuffers == nullptr");
   }
 }
 

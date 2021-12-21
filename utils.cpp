@@ -60,19 +60,40 @@ DescriptorField VisCor::loadExrField(const fs::path &path,
   }
 
   DescriptorField f;
-  f.shape = shape;
 
-  f.data = torch::empty({(long)nChannels, spec.height, spec.width},
-                        torch::TensorOptions().dtype(torch::kF32));
+  f.c = nChannels;
+  f.h = spec.height;
+  f.w = spec.width;
+  f.chw_data = torch::empty({(long)nChannels, spec.height, spec.width},
+                            torch::TensorOptions().dtype(torch::kF32));
 
   long offset = 0;
   for (const auto &c : descChannels) {
     const auto channelIdx = spec.channelindex(c);
     in->read_image(channelIdx, channelIdx + 1, TypeDesc::FLOAT,
-                   f.data.data_ptr<float>() + offset);
+                   f.chw_data.data_ptr<float>() + offset);
     offset += spec.width * spec.height;
   }
 
-  f.data = f.data.clone().to(device);
+  f.chw_data = f.chw_data.clone().to(device);
   return f;
+}
+
+DescriptorField
+VisCor::DescriptorField::fromTensor(const torch::Tensor &tensor) {
+  DescriptorField f;
+  if (tensor.sizes().size() != 3) {
+    throw std::invalid_argument(
+        "DescriptorField should have 3 indices in the CHW order");
+  }
+  f.c = tensor.size(0);
+  f.h = tensor.size(1);
+  f.w = tensor.size(2);
+  f.chw_data = tensor;
+  return f;
+}
+
+torch::Tensor VisCor::tensorFromImage(const Uint8Image &img) {
+  return torch::from_blob(img.data.get(), {img.yres, img.xres, img.channels}, torch::kUInt8)
+      .clone();
 }

@@ -19,7 +19,8 @@
 #include <clipp.h>
 #include <filesystem>
 
-#include <ATen/ATen.h> // c10::InferenceMode
+#include <ATen/ATen.h>    // c10::InferenceMode
+#include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
 
 #include "viscor/imgui-utils.h"
@@ -31,21 +32,16 @@ using namespace VisCor;
 struct AppArgs {
   std::string image0Path;
   std::string image1Path;
-  std::string feat0Path;
-  std::string feat1Path;
+  std::string modelPath;
   bool fix01Scale = false;
   float heatmapAlpha = 0.6;
 
   AppArgs(int argc, char *argv[]) {
     using namespace clipp;
 
-    bool image0set = false, image1set = false;
-
     auto cli =
-        (value("Path to the first featuremap", feat0Path),
-         value("Path to the second featuremap", feat1Path),
-         option("--image0").set(image0set) & value("path", image0Path),
-         option("--image1").set(image1set) & value("path", image1Path),
+        (value("Path to the traced model", modelPath),
+         value("image0 path", image0Path), value("image1 path", image1Path),
          option("-01", "--fix-01-scale")
              .set(fix01Scale)
              .doc("Fix the heatmap scale to [0..1]. Otherwise, adjust to "
@@ -58,14 +54,31 @@ struct AppArgs {
       std::cerr << make_man_page(cli, argv[0]);
       std::exit(1);
     }
-    if (!image0set) {
-      // image0Path = fs::path(tracePath) / "image0.tif";
-    }
-    if (!image1set) {
-      // image1Path = fs::path(tracePath) / "image1.tif";
-    }
   }
 };
+
+std::tuple<torch::Tensor, torch::Tensor> extract(torch::jit::script::Module &m,
+                                                 const Uint8Image &image0,
+                                                 const Uint8Image &image1,
+                                                 const torch::Device &device) {
+
+  std::vector<torch::jit::IValue> inputs;
+  inputs.push_back(tensorFromImage(image0)
+                       .to(device, torch::kF32)
+                       .squeeze(-1)
+                       .unsqueeze(0)
+                       .unsqueeze(0)
+                       .div(255.0));
+  inputs.push_back(tensorFromImage(image1)
+                       .to(device, torch::kF32)
+                       .squeeze(-1)
+                       .unsqueeze(0)
+                       .unsqueeze(0)
+                       .div(255.0));
+  const auto outputs = m.forward(inputs).toTuple();
+  return std::make_tuple(outputs->elements()[0].toTensor().squeeze(0).contiguous(),
+                         outputs->elements()[1].toTensor().squeeze(0).contiguous());
+}
 
 int main(int argc, char *argv[]) {
 
@@ -84,14 +97,29 @@ int main(int argc, char *argv[]) {
       inferenceModeGuard; // TODO: InferenceMode guard in a newer pytorch
   const auto device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
 
-  std::cerr << "Using " << device << std::endl;
+  std::cerr << "[I] Using " << device << std::endl;
 
-  ImHeatSlice heatView(
-      loadExrField(args.feat0Path, device),
-      loadExrField(args.feat1Path, device),
-      SafeGlTexture(oiioLoadImage(args.image0Path), GL_NEAREST),
-      SafeGlTexture(oiioLoadImage(args.image1Path), GL_NEAREST), device,
-      args.fix01Scale);
+  torch::jit::script::Module model = torch::jit::load(args.modelPath, device);
+
+  Uint8Image image0(oiioLoadImage(args.image0Path));
+  Uint8Image image1(oiioLoadImage(args.image1Path));
+
+  const auto outputs = extract(model, image0, image1, device);
+
+  ImHeatSlice heatView(DescriptorField::fromTensor(std::get<0>(outputs)),
+                       DescriptorField::fromTensor(std::get<1>(outputs)),
+                       SafeGlTexture(image0, GL_NEAREST),
+                       SafeGlTexture(image1, GL_NEAREST), device,
+                       args.fix01Scale);
+
+  if (heatView.desc0.chw_data.isnan().any().item<bool>()) {
+    std::cerr << "[E] desc0: Found " << heatView.desc0.chw_data.isnan().sum().item<long>() << " NaNs"
+              << std::endl;
+  }
+  if (heatView.desc1.chw_data.isnan().any().item<bool>()) {
+    std::cerr << "[E] desc1: Found " << heatView.desc1.chw_data.isnan().sum().item<long>() << " NaNs"
+              << std::endl;
+  }
 
   constexpr auto defaultWindowOptions = ImGuiWindowFlags_NoDecoration |
                                         ImGuiWindowFlags_NoBackground |

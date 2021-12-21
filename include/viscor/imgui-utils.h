@@ -92,10 +92,10 @@ struct ImHeatSlice {
         desc1(std::move(desc1)), image0(std::move(image0)),
         image1(std::move(image1)) {
     heat = torch::empty(
-        {desc1.h(), desc1.w()},
+        {desc1.h, desc1.w},
         torch::TensorOptions().device(torch::kCPU).dtype(torch::kFloat32));
     heatOnDevice = torch::zeros(
-        {desc1.h(), desc1.w()},
+        {desc1.h, desc1.w},
         torch::TensorOptions().device(torch::kCPU).dtype(torch::kF32));
   }
 
@@ -137,9 +137,9 @@ struct ImHeatSlice {
       newQuery.v0 = uv.y;
 
       const auto i =
-          std::max(0, std::min((int)(uv.y * desc0.h()), desc0.h() - 1));
+          std::max(0, std::min((int)(uv.y * desc0.h), desc0.h - 1));
       const auto j =
-          std::max(0, std::min((int)(uv.x * desc0.w()), desc0.w() - 1));
+          std::max(0, std::min((int)(uv.x * desc0.w), desc0.w - 1));
       newQuery.iSlice = i;
       newQuery.jSlice = j;
 
@@ -157,11 +157,11 @@ struct ImHeatSlice {
                          heat.size(1) > 0;
 
       if (!cachedSlice) {
-        const auto stdvar = std::sqrt(desc1.c());
+        const auto stdvar = std::sqrt(desc1.c);
         const auto query =
-            desc0(newQuery.iSlice, newQuery.jSlice).reshape({desc0.c(), 1, 1}) /
+            desc0(newQuery.iSlice, newQuery.jSlice).reshape({desc0.c, 1, 1}) /
             stdvar;
-        heatOnDevice = desc1.data.div(stdvar).mul(query).sum(0);
+        heatOnDevice = desc1.chw_data.div(stdvar).mul(query).sum(0);
         if (newQuery.exp) {
           heatOnDevice.exp_();
         }

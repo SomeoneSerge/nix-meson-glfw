@@ -59,26 +59,27 @@ struct AppArgs {
 
 std::tuple<torch::Tensor, torch::Tensor> extract(torch::jit::script::Module &m,
                                                  const Uint8Image &image0,
-                                                 const Uint8Image &image1,
-                                                 const torch::Device &device) {
+                                                 const Uint8Image &image1) {
 
   std::vector<torch::jit::IValue> inputs;
+  const auto device = (*m.parameters().begin()).device();
+  const auto dtype = (*m.parameters().begin()).dtype();
   inputs.push_back(tensorFromImage(image0)
-                       .to(device, torch::kF32)
+                       .to(device, dtype)
                        .squeeze(-1)
                        .unsqueeze(0)
                        .unsqueeze(0)
                        .div(255.0));
   inputs.push_back(tensorFromImage(image1)
-                       .to(device, torch::kF32)
+                       .to(device, dtype)
                        .squeeze(-1)
                        .unsqueeze(0)
                        .unsqueeze(0)
                        .div(255.0));
   const auto outputs = m.forward(inputs).toTuple();
-  return std::make_tuple(
-      outputs->elements()[0].toTensor().squeeze(0).contiguous(),
-      outputs->elements()[1].toTensor().squeeze(0).contiguous());
+  const auto desc0 = outputs->elements()[0].toTensor().squeeze(0).contiguous();
+  const auto desc1 = outputs->elements()[1].toTensor().squeeze(0).contiguous();
+  return std::make_tuple(desc0, desc1);
 }
 
 int main(int argc, char *argv[]) {
@@ -101,24 +102,29 @@ int main(int argc, char *argv[]) {
   std::cerr << "[I] Using " << device << std::endl;
 
   torch::jit::script::Module model = torch::jit::load(args.modelPath, device);
+  // for (const auto &np: model.named_parameters()) {
+  //     std::cerr << "[I] " << np.name << ": " << np.value.sizes() << "->" <<
+  //     np.value.dtype() << std::endl;
+  // }
 
   Uint8Image image0(oiioLoadImage(args.image0Path));
   Uint8Image image1(oiioLoadImage(args.image1Path));
 
-  const auto outputs = extract(model, image0, image1, device);
+  const auto outputs = extract(model, image0, image1);
 
   ImHeatSlice heatView(DescriptorField::fromTensor(std::get<0>(outputs)),
                        DescriptorField::fromTensor(std::get<1>(outputs)),
-                       Uint8Image(image0), Uint8Image(image1), device, args.fix01Scale);
+                       Uint8Image(image0), Uint8Image(image1), device,
+                       args.fix01Scale);
 
   if (heatView.desc0.chw_data.isnan().any().item<bool>()) {
     std::cerr << "[E] desc0: Found "
-              << heatView.desc0.chw_data.isnan().sum().item<long>() << " NaNs"
+              << std::get<0>(outputs).isnan().sum().item<long>() << " NaNs"
               << std::endl;
   }
   if (heatView.desc1.chw_data.isnan().any().item<bool>()) {
     std::cerr << "[E] desc1: Found "
-              << heatView.desc1.chw_data.isnan().sum().item<long>() << " NaNs"
+              << std::get<1>(outputs).isnan().sum().item<long>() << " NaNs"
               << std::endl;
   }
 

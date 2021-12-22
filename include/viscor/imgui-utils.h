@@ -22,7 +22,7 @@ struct SliceQuery {
   double v0 = 0.5;
   int iSlice = -1;
   int jSlice = -1;
-  bool exp = false;
+  bool exp = true;
 };
 
 inline ImPlotColormap colormapTransparentResample(ImPlotColormap src,
@@ -182,25 +182,25 @@ struct ImHeatSlice {
         heatOnDevice.clip_(-max, max);
 
         heat.copy_(heatOnDevice.to(torch::kCPU));
+
+        if (fix01Scale) {
+          heatMin = 0;
+          heatMax = 1;
+        } else {
+          heatMin = heatOnDevice.min().item<double>();
+          heatMax = heatOnDevice.max().item<double>();
+        }
+
+        heatMax = std::max(heatMax, heatMin + .1);
+
+        const auto heatColored = cmapNearest(VIRIDIS, heat, heatMin, heatMax)
+                                     .mul(255)
+                                     .to(torch::kUInt8);
+        texHeat.bind();
+        texHeat.reallocate(3, heatColored.size(0), heatColored.size(1),
+                           GL_NEAREST, GL_UNSIGNED_BYTE,
+                           heatColored.data_ptr<uint8_t>());
       }
-
-      if (fix01Scale) {
-        heatMin = 0;
-        heatMax = 1;
-      } else {
-        heatMin = heatOnDevice.min().item<double>();
-        heatMax = heatOnDevice.max().item<double>();
-      }
-
-      heatMax = std::max(heatMax, heatMin + .1);
-
-      const auto heatColored = cmapNearest(VIRIDIS, heat, heatMin, heatMax)
-                                   .mul(255)
-                                   .to(torch::kUInt8);
-      texHeat.bind();
-      texHeat.reallocate(3, heatColored.size(0), heatColored.size(1),
-                         GL_NEAREST, GL_UNSIGNED_BYTE,
-                         heatColored.data_ptr<uint8_t>());
 
       ImPlot::PlotImage("im1", tex1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
                         ImPlotPoint(1.0, 1.0), ImVec2(0, 0), ImVec2(1, 1),
@@ -225,7 +225,7 @@ struct ImHeatSlice {
   SliceQuery newQuery;
   SliceQuery query;
   bool fix01Scale = false;
-  float alpha = .75;
+  float alpha = .5;
   double heatMin = 0;
   double heatMax = 1;
   torch::Device device;

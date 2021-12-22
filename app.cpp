@@ -76,8 +76,9 @@ std::tuple<torch::Tensor, torch::Tensor> extract(torch::jit::script::Module &m,
                        .unsqueeze(0)
                        .div(255.0));
   const auto outputs = m.forward(inputs).toTuple();
-  return std::make_tuple(outputs->elements()[0].toTensor().squeeze(0).contiguous(),
-                         outputs->elements()[1].toTensor().squeeze(0).contiguous());
+  return std::make_tuple(
+      outputs->elements()[0].toTensor().squeeze(0).contiguous(),
+      outputs->elements()[1].toTensor().squeeze(0).contiguous());
 }
 
 int main(int argc, char *argv[]) {
@@ -108,16 +109,16 @@ int main(int argc, char *argv[]) {
 
   ImHeatSlice heatView(DescriptorField::fromTensor(std::get<0>(outputs)),
                        DescriptorField::fromTensor(std::get<1>(outputs)),
-                       SafeGlTexture(image0, GL_NEAREST),
-                       SafeGlTexture(image1, GL_NEAREST), device,
-                       args.fix01Scale);
+                       Uint8Image(image0), Uint8Image(image1), device, args.fix01Scale);
 
   if (heatView.desc0.chw_data.isnan().any().item<bool>()) {
-    std::cerr << "[E] desc0: Found " << heatView.desc0.chw_data.isnan().sum().item<long>() << " NaNs"
+    std::cerr << "[E] desc0: Found "
+              << heatView.desc0.chw_data.isnan().sum().item<long>() << " NaNs"
               << std::endl;
   }
   if (heatView.desc1.chw_data.isnan().any().item<bool>()) {
-    std::cerr << "[E] desc1: Found " << heatView.desc1.chw_data.isnan().sum().item<long>() << " NaNs"
+    std::cerr << "[E] desc1: Found "
+              << heatView.desc1.chw_data.isnan().sum().item<long>() << " NaNs"
               << std::endl;
   }
 
@@ -149,7 +150,7 @@ int main(int argc, char *argv[]) {
 
     const auto workArea = ImVec2(glfwSize.x, glfwSize.y - toolboxHeight);
     const auto neededArea =
-        ImVec2(workArea.x, .5 * workArea.x * heatView.image0.aspect());
+        ImVec2(workArea.x, .5 * workArea.x * heatView.tex0.aspect());
     ImGui::SetNextWindowPos(ImVec2(0, toolboxHeight));
     ImGui::SetNextWindowSizeConstraints(
         neededArea,

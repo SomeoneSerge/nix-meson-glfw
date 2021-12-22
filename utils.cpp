@@ -94,6 +94,7 @@ VisCor::DescriptorField::fromTensor(const torch::Tensor &tensor) {
 }
 
 torch::Tensor VisCor::tensorFromImage(const Uint8Image &img) {
-  return torch::from_blob(img.data.get(), {img.yres, img.xres, img.channels}, torch::kUInt8)
+  return torch::from_blob(img.data.get(), {img.yres, img.xres, img.channels},
+                          torch::kUInt8)
       .clone();
 }

@@ -12,8 +12,8 @@ namespace VisCor {
 namespace fs = std::filesystem;
 
 struct DescriptorField {
-    int h, w, c;
-    torch::Tensor chw_data;
+  int h, w, c;
+  torch::Tensor chw_data;
 
   DescriptorField(const DescriptorField &) = delete;
   DescriptorField() = default;
@@ -40,8 +40,13 @@ struct Uint8Image {
       : xres(xres), yres(yres), channels(channels), data(std::move(data)) {}
 
   Uint8Image(Uint8Image &&other)
-      : xres(other.xres), yres(other.yres), data(std::move(other.data)) {}
-  Uint8Image(const Uint8Image &other) = delete;
+      : xres(other.xres), yres(other.yres), channels(other.channels),
+        data(std::move(other.data)) {}
+  explicit Uint8Image(const Uint8Image &other)
+      : xres(other.xres), yres(other.yres), channels(other.channels),
+        data(std::make_unique<unsigned char[]>(xres * yres * channels)) {
+    std::memcpy(data.get(), other.data.get(), xres * yres * channels);
+  }
 };
 
 Uint8Image oiioLoadImage(const std::string &filename);
@@ -61,7 +66,6 @@ struct LayoutJson {
   std::vector<int> shape;
   std::string dtype;
 };
-
 
 }; // namespace VisCor
 

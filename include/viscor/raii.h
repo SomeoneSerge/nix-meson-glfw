@@ -143,25 +143,33 @@ public:
 class SafeGlTexture : NoCopy {
 public:
   SafeGlTexture(const Uint8Image &image,
-                const unsigned int interpolation = GL_LINEAR);
+                const unsigned int interpolation = GL_LINEAR,
+                const unsigned int dtype = GL_UNSIGNED_BYTE);
 
-  SafeGlTexture(SafeGlTexture &&other)
-      : _texture(other._texture), _xres(other._xres), _yres(other._yres) {
-    other._texture = GL_INVALID_VALUE;
+  SafeGlTexture(SafeGlTexture &&other) : data(other.data) {
+    other.data.texture = GL_INVALID_VALUE;
   }
 
   ~SafeGlTexture();
 
-  GLuint texture() const { return _texture; }
-  void *textureVoidStar() const { return (void *)(intptr_t)_texture; }
-  void bind() { glBindTexture(GL_TEXTURE_2D, _texture); }
-  int xres() const { return _xres; }
-  int yres() const { return _yres; }
-  double aspect() const { return _yres * 1.0 / _xres; }
+  GLuint texture() const { return data.texture; }
+  void *textureVoidStar() const { return (void *)(intptr_t)data.texture; }
+  unsigned int reallocate(const int channels, const int height, const int width,
+                          const unsigned int interpolation = GL_LINEAR,
+                          const unsigned int dtype = GL_UNSIGNED_BYTE,
+                          const void *data = nullptr);
+  void bind() { glBindTexture(GL_TEXTURE_2D, data.texture); }
+  int xres() const { return data.xres; }
+  int yres() const { return data.yres; }
+  double aspect() const { return data.yres * 1.0 / data.xres; }
 
 private:
-  GLuint _texture;
-  int _xres, _yres;
+  struct {
+    GLuint texture;
+    int xres, yres, channels;
+    unsigned int dtype;
+    unsigned int interpolation;
+  } data;
 };
 }; // namespace VisCor
 

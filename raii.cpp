@@ -32,7 +32,7 @@ VisCor::SafeGlew::SafeGlew() {
   glewInit();
 
   if (glGenBuffers == nullptr) {
-    throw std::runtime_error("glewInit() failed");
+    throw std::runtime_error("glewInit() failed: glGenBuffers == nullptr");
   }
 }
 
@@ -122,23 +122,52 @@ VisCor::ImGuiGlfwFrame::~ImGuiGlfwFrame() {
 }
 
 VisCor::SafeGlTexture::SafeGlTexture(const Uint8Image &image,
-                                     const unsigned int interpolation)
-    : _texture(0), _xres(image.xres), _yres(image.yres) {
-  glGenTextures(1, &_texture);
-  glBindTexture(GL_TEXTURE_2D, _texture);
+                                     const unsigned int interpolation,
+                                     const unsigned int dtype)
+    : data({.texture = 0,
+            .xres = image.xres,
+            .yres = image.yres,
+            .channels = image.channels,
+            .dtype = dtype,
+            .interpolation = interpolation}) {
+  glGenTextures(1, &data.texture);
+  glBindTexture(GL_TEXTURE_2D, data.texture);
 
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, interpolation);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, interpolation);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+  reallocate(image.channels, image.yres, image.xres, interpolation, dtype,
+             image.data.get());
+}
+unsigned int VisCor::SafeGlTexture::reallocate(const int channels,
+                                               const int height,
+                                               const int width,
+                                               const unsigned int interpolation,
+                                               const unsigned int dtype,
+                                               const void *imageData) {
+
+  this->data = {.texture = this->data.texture,
+                .xres = width,
+                .yres = height,
+                .channels = channels,
+                .dtype = dtype,
+                .interpolation = interpolation};
+
   constexpr unsigned int modes[] = {0, GL_DEPTH_COMPONENT, 0, GL_RGB, GL_RGBA};
-  const auto mode = modes[image.channels];
-  glTexImage2D(GL_TEXTURE_2D, 0, mode, _xres, _yres, 0, mode, GL_UNSIGNED_BYTE,
-               image.data.get());
+  if (channels != 1 && channels != 3 && channels != 4) {
+    std::cerr << "[E] texture cannot have " << channels << " channels"
+              << std::endl;
+    throw std::invalid_argument("invalid number of channels");
+  }
+  const auto mode = modes[channels];
+  glTexImage2D(GL_TEXTURE_2D, 0, mode, data.xres, data.yres, 0, mode, dtype,
+               imageData);
+  return texture();
 }
 VisCor::SafeGlTexture::~SafeGlTexture() {
-  if (_texture != GL_INVALID_VALUE) {
-    glDeleteTextures(1, &_texture);
+  if (data.texture != GL_INVALID_VALUE) {
+    glDeleteTextures(1, &data.texture);
   }
 }

@@ -9,6 +9,7 @@
 #include <imgui.h>
 #include <implot.h>
 
+#include "viscor/cmaps.h"
 #include "viscor/raii.h"
 #include "viscor/utils.h"
 
@@ -21,7 +22,7 @@ struct SliceQuery {
   double v0 = 0.5;
   int iSlice = -1;
   int jSlice = -1;
-  bool exp = false;
+  bool exp = true;
 };
 
 inline ImPlotColormap colormapTransparentResample(ImPlotColormap src,
@@ -84,18 +85,29 @@ inline ImPlotColormap colormapTransparentCopy(ImPlotColormap src,
   return cmap;
 }
 
+torch::Tensor cmapNearest(const CMapRGB &cmap, const torch::Tensor &heatmap,
+                          const double lo, const double hi) {
+  const auto idx =
+      (heatmap - lo).div(hi - lo).mul(cmap.size - 1).to(torch::kLong);
+  const auto tCMap = torch::from_blob(
+      const_cast<double *>(cmap.data), {cmap.size, 3},
+      torch::TensorOptions().dtype(torch::kDouble).device(heatmap.device()));
+  return tCMap.index({idx});
+}
+
 struct ImHeatSlice {
   ImHeatSlice(DescriptorField &&desc0, DescriptorField &&desc1,
-              SafeGlTexture &&image0, SafeGlTexture &&image1,
-              const torch::Device &device, const bool fix01Scale)
+              Uint8Image &&im0, Uint8Image &&im1, const torch::Device &device,
+              const bool fix01Scale)
       : fix01Scale(fix01Scale), device(device), desc0(std::move(desc0)),
-        desc1(std::move(desc1)), image0(std::move(image0)),
-        image1(std::move(image1)) {
+        desc1(std::move(desc1)), image0(std::move(im0)), image1(std::move(im1)),
+        tex0(image0, GL_NEAREST), tex1(image1, GL_NEAREST),
+        texHeat(image1, GL_NEAREST) {
     heat = torch::empty(
-        {desc1.h(), desc1.w()},
+        {desc1.h, desc1.w},
         torch::TensorOptions().device(torch::kCPU).dtype(torch::kFloat32));
     heatOnDevice = torch::zeros(
-        {desc1.h(), desc1.w()},
+        {desc1.h, desc1.w},
         torch::TensorOptions().device(torch::kCPU).dtype(torch::kF32));
   }
 
@@ -109,11 +121,11 @@ struct ImHeatSlice {
     const auto cmapWidth = 100;
     const auto plotSize =
         ImVec2(.5 * (frameSize.x - cmapWidth),
-               .5 * (frameSize.x - cmapWidth) * image0.aspect());
+               .5 * (frameSize.x - cmapWidth) * tex0.aspect());
 
     if (ImPlot::BeginPlot("Image0", nullptr, nullptr, plotSize,
                           defaultPlotOptions)) {
-      ImPlot::PlotImage("im0", image0.textureVoidStar(), ImPlotPoint(0.0, 0.0),
+      ImPlot::PlotImage("im0", tex0.textureVoidStar(), ImPlotPoint(0.0, 0.0),
                         ImPlotPoint(1.0, 1.0));
 
       const auto xyNew = ImPlot::GetPlotMousePos();
@@ -136,10 +148,8 @@ struct ImHeatSlice {
       newQuery.u0 = uv.x;
       newQuery.v0 = uv.y;
 
-      const auto i =
-          std::max(0, std::min((int)(uv.y * desc0.h()), desc0.h() - 1));
-      const auto j =
-          std::max(0, std::min((int)(uv.x * desc0.w()), desc0.w() - 1));
+      const auto i = std::max(0, std::min((int)(uv.y * desc0.h), desc0.h - 1));
+      const auto j = std::max(0, std::min((int)(uv.x * desc0.w), desc0.w - 1));
       newQuery.iSlice = i;
       newQuery.jSlice = j;
 
@@ -157,11 +167,11 @@ struct ImHeatSlice {
                          heat.size(1) > 0;
 
       if (!cachedSlice) {
-        const auto stdvar = std::sqrt(desc1.c());
+        const auto stdvar = std::sqrt(desc1.c);
         const auto query =
-            desc0(newQuery.iSlice, newQuery.jSlice).reshape({desc0.c(), 1, 1}) /
+            desc0(newQuery.iSlice, newQuery.jSlice).reshape({desc0.c, 1, 1}) /
             stdvar;
-        heatOnDevice = desc1.data.div(stdvar).mul(query).sum(0);
+        heatOnDevice = desc1.chw_data.div(stdvar).mul(query).sum(0);
         if (newQuery.exp) {
           heatOnDevice.exp_();
         }
@@ -172,28 +182,32 @@ struct ImHeatSlice {
         heatOnDevice.clip_(-max, max);
 
         heat.copy_(heatOnDevice.to(torch::kCPU));
+
+        if (fix01Scale) {
+          heatMin = 0;
+          heatMax = 1;
+        } else {
+          heatMin = heatOnDevice.min().item<double>();
+          heatMax = heatOnDevice.max().item<double>();
+        }
+
+        heatMax = std::max(heatMax, heatMin + .1);
+
+        const auto heatColored = cmapNearest(VIRIDIS, heat, heatMin, heatMax)
+                                     .mul(255)
+                                     .to(torch::kUInt8);
+        texHeat.bind();
+        texHeat.reallocate(3, heatColored.size(0), heatColored.size(1),
+                           GL_NEAREST, GL_UNSIGNED_BYTE,
+                           heatColored.data_ptr<uint8_t>());
       }
 
-      if (fix01Scale) {
-        heatMin = 0;
-        heatMax = 1;
-      } else {
-        heatMin = heatOnDevice.min().item<double>();
-        heatMax = heatOnDevice.max().item<double>();
-      }
-
-      heatMax = std::max(heatMax, heatMin + .1);
-
-      ImPlot::PlotImage("im1", image1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
-                        ImPlotPoint(1.0, 1.0));
-
-      const auto cmap = colormapTransparentCopy(ImPlotColormap_Viridis, alpha);
-      ImPlot::PushColormap(cmap);
-      ImPlot::PlotHeatmap("Correspondence volume slice",
-                          (float *)heat.data_ptr(), heat.size(0), heat.size(1),
-                          heatMin, heatMax, nullptr);
-      ImPlot::PopColormap();
-
+      ImPlot::PlotImage("im1", tex1.textureVoidStar(), ImPlotPoint(0.0, 0.0),
+                        ImPlotPoint(1.0, 1.0), ImVec2(0, 0), ImVec2(1, 1),
+                        ImVec4(1, 1, 1, 1. - alpha));
+      ImPlot::PlotImage("im1Heat", texHeat.textureVoidStar(),
+                        ImPlotPoint(0.0, 0.0), ImPlotPoint(1.0, 1.0),
+                        ImVec2(0, 0), ImVec2(1, 1), ImVec4(1, 1, 1, alpha));
       ImPlot::EndPlot();
     }
 
@@ -211,14 +225,17 @@ struct ImHeatSlice {
   SliceQuery newQuery;
   SliceQuery query;
   bool fix01Scale = false;
-  float alpha = .75;
+  float alpha = .5;
   double heatMin = 0;
   double heatMax = 1;
   torch::Device device;
   DescriptorField desc0;
   DescriptorField desc1;
-  SafeGlTexture image0;
-  SafeGlTexture image1;
+  Uint8Image image0;
+  Uint8Image image1;
+  SafeGlTexture tex0;
+  SafeGlTexture tex1;
+  SafeGlTexture texHeat;
   torch::Tensor heat;
   torch::Tensor heatOnDevice;
 };

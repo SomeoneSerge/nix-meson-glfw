@@ -12,8 +12,8 @@ namespace VisCor {
 namespace fs = std::filesystem;
 
 struct DescriptorField {
-  std::tuple<int, int, int> shape;
-  torch::Tensor data;
+  int h, w, c;
+  torch::Tensor chw_data;
 
   DescriptorField(const DescriptorField &) = delete;
   DescriptorField() = default;
@@ -21,12 +21,10 @@ struct DescriptorField {
 
   torch::Tensor operator()(const int i, const int j) const {
     using namespace torch::indexing;
-    return data.index({Slice(), i, j});
+    return chw_data.index({Slice(), i, j});
   }
 
-  int h() const { return std::get<0>(shape); }
-  int w() const { return std::get<1>(shape); }
-  int c() const { return std::get<2>(shape); }
+  static DescriptorField fromTensor(const torch::Tensor &);
 };
 
 DescriptorField loadExrField(const fs::path &path, const torch::Device &device);
@@ -42,11 +40,18 @@ struct Uint8Image {
       : xres(xres), yres(yres), channels(channels), data(std::move(data)) {}
 
   Uint8Image(Uint8Image &&other)
-      : xres(other.xres), yres(other.yres), data(std::move(other.data)) {}
-  Uint8Image(const Uint8Image &other) = delete;
+      : xres(other.xres), yres(other.yres), channels(other.channels),
+        data(std::move(other.data)) {}
+  explicit Uint8Image(const Uint8Image &other)
+      : xres(other.xres), yres(other.yres), channels(other.channels),
+        data(std::make_unique<unsigned char[]>(xres * yres * channels)) {
+    std::memcpy(data.get(), other.data.get(), xres * yres * channels);
+  }
 };
 
 Uint8Image oiioLoadImage(const std::string &filename);
+
+torch::Tensor tensorFromImage(const Uint8Image &);
 
 struct LayoutJson {
   LayoutJson(const fs::path &path) {
@@ -61,6 +66,7 @@ struct LayoutJson {
   std::vector<int> shape;
   std::string dtype;
 };
+
 }; // namespace VisCor
 
 #endif

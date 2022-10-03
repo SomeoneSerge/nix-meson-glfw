@@ -10,17 +10,6 @@ meson compile -C build/
 
 The project can be built via meson.
 Dependencies are discovered via pkg-config.
-Some dependencies, e.g. openimageio, do not distribute a `.pc` file,
-so you're expected to plunge one in via `PKG_CONFIG_PATH`.
-The expected name is `openimageio2`.
-
-So, the expected behaviour would be e.g.:
-
-```bash
-$ pkg-config --cflags openimageio2
--I/nix/store/469y1mzjvdpq10s94hprn26si5600knw-openimageio-2.2.12.0-dev/include
-```
-
 
 ## Leaks
 

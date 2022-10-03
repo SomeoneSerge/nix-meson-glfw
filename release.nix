@@ -10,7 +10,7 @@
 , glfw3
 , glew
 , xorg
-, oiio-pc
+, openimageio2
 , openexr
 , msgpack
 , clipp
@@ -21,8 +21,7 @@
 , CoreVideo
 , IOKit
 , libtorch
-, cudatoolkit
-, cudnn
+, cudaPackages
 , cudaSupport ? false
 }:
 
@@ -60,7 +59,7 @@ stdenv.mkDerivation {
   buildInputs = [
     glfw3
     glew.dev
-    oiio-pc
+    openimageio2
     openexr.dev
     msgpack
     clipp
@@ -68,7 +67,7 @@ stdenv.mkDerivation {
     libglvnd.dev
     libtorch
   ]
-  ++ lib.optionals cudaSupport [ cudatoolkit cudnn ]
+  ++ lib.optionals cudaSupport [ cudaPackages.cudatoolkit cudaPackages.cudnn ]
   ++ lib.optionals stdenv.isLinux [ xorg.libX11 ]
   ++ lib.optionals stdenv.isDarwin [ OpenGL Cocoa CoreVideo IOKit ];
 

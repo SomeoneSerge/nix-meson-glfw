@@ -13,7 +13,7 @@ glfw3 = dependency('glfw3', version: '>=3.0.0')
 glew = dependency('glew', version: '>=2.2.0')
 
 json = dependency('nlohmann_json')
-oiio = dependency('openimageio2')
+oiio = dependency('OpenImageIO')
 openexr = dependency('OpenEXR')
 msgpack = dependency('msgpack')
 clipp = dependency('clipp')
